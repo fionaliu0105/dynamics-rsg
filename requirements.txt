@@ -1,0 +1,29 @@
+# Main environment: modeling + similarity analysis.
+# Install:  pip install -r requirements.txt  &&  pip install -e .
+#
+# Neural-data ingestion (dandi/pynwb/nlb_tools) is DELIBERATELY NOT here — it has a
+# conflicting numpy/scipy pin range. Keep it in a separate env; see
+# requirements-ingestion.txt and AGENTS.md ("Dependency fragility").
+
+numpy
+scipy
+pyyaml
+matplotlib
+
+# --- modeling ---
+torch
+neurogym            # ReadySetGo-v0 task base (we extend it to two priors)
+
+# --- similarity ---
+rsatoolbox          # RSA: RDMs + noise ceiling
+# InputDSA / DSA — research code, install from git (pulls kooplearn + pot):
+#   pip install git+https://github.com/mitchellostrow/DSA.git
+# Pinned separately because it is the shakiest install; validate it first (0.6/0.7).
+
+# --- store / io ---
+# The activation store uses numpy .npz (no extra dep). h5py/zarr are optional
+# future backends; do NOT add h5py to satisfy the store — the shared env's h5py has
+# a numpy-ABI break.
+
+# --- dev ---
+pytest

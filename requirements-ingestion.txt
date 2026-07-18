@@ -1,0 +1,15 @@
+# Isolated ingestion environment: DANDI 000130 (NWB) -> data/processed/ tensors.
+# Kept SEPARATE from the modeling env because dandi/pynwb/nlb_tools pin numpy/scipy
+# ranges that conflict with torch/rsatoolbox/DSA. This env only ever runs
+# src/data/build_neural.py and writes to data/processed/; modeling code then reads
+# those tensors and never imports pynwb/dandi. See AGENTS.md ("Dependency fragility").
+#
+# Try a single combined env FIRST (requirements.txt + these). Only split into this
+# separate env if the combined install fails to resolve numpy/scipy.
+
+numpy
+scipy
+pandas
+dandi
+pynwb
+nlb_tools           # DMFC_RSG loader: trial-aligned binned rates + behavioral tp
