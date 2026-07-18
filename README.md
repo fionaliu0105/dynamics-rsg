@@ -39,6 +39,28 @@ the body raises `NotImplementedError`.
 | Training entry point | `scripts/train.py` | implemented (`--dry-run`); loop stubbed |
 | Task, BPTT, PC, preprocess, RSA, iDSA, behavior, neural loader, trainer loop | `src/task`, `src/models`, `src/preprocess`, `src/compare`, `src/behavior`, `src/data`, `src/training/trainer.py` | stubs |
 
+## Division of labor (who implements which files)
+
+Foundation contracts are provided; each of the 5 members owns one module. Every stub
+below already exists with its interface, a "definition of done", and a reference in
+the docstring — implementing it means filling the `TODO(<track>)` seams. See
+[`docs/implementation_plan.md`](docs/implementation_plan.md) → "Team & division of
+labor" for the full table (learning goals, difficulty, plan-task numbers).
+
+| Track | Files to implement | Plan tasks |
+| --- | --- | --- |
+| Task & behavior | `src/task/rsg.py`, `src/behavior/slope.py` | 1.A, 2.2 |
+| BPTT RNN | `src/models/bptt_rnn.py` | 1.B |
+| PC RNN *(pair)* | `src/models/pc_rnn.py` | 1.C, 2.1 (PC-B) |
+| Preprocess & RSA | `src/preprocess/pipeline.py`, `src/compare/rsa.py` | 1.E, 2.3 |
+| iDSA | `src/compare/idsa.py` | 2.4, 2.5, 2.6 |
+
+Provided by the foundation (agent-owned): the contracts (`src/conditions.py`,
+`src/training/config.py`, `src/store/`, `src/models/base.py`), the viz harness
+(`src/viz/figures.py`), and the entry point (`scripts/train.py`) are implemented and
+tested; the neural loader (`src/data/build_neural.py`) and the trainer loop
+(`src/training/trainer.py`) are agent-owned scaffolds still being filled in.
+
 ## Repository layout
 
 ```

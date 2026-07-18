@@ -92,22 +92,26 @@ split so each of the 5 members owns a full **module** end to end — interface �
 implementation → its test → a small figure — against shared contracts, while the
 structural foundation is provided so everyone can work in parallel from day one.
 
-**Provided foundation (documented teaching scaffold, with stubs + `TODO` seams):**
-interface contracts (`config`, `conditions.py`, base model interface, store
-schema); repo scaffolding + env; the **neural data loader** (1.D); the
-rule-agnostic **trainer infra** (2.1 minus the learning loops); the **viz +
-smoke-test harness** (3.3); and **InputDSA** installed with a synthetic-check
-template (0.6–0.7).
+**Provided foundation (agent-owned).** *Implemented + tested* (`tests/test_foundation.py`):
+`src/conditions.py`, `src/training/config.py`, `src/store/activation_store.py`,
+`src/models/base.py`, `src/viz/figures.py` (harness), `scripts/train.py`
+(entry point, `--dry-run`), plus `requirements.txt` / `requirements-ingestion.txt`.
+*Agent-owned scaffolds still to fill:* `src/data/build_neural.py` (neural loader,
+1.D), `src/training/trainer.py` (rule-agnostic loop + checkpoint/store-write, 2.1),
+and the InputDSA install + synthetic checks (0.6–0.7).
 
-**Member tracks — one module each (map members by interest/skill):**
+**Member tracks — one module each (map members by interest/skill).** Each track's
+stub already exists at the path below with the interface, a definition-of-done, and
+a reference in its docstring; implementing it = filling the `TODO(<track>)` seams.
+Paths are relative to `src/`.
 
-| Track | Owns (plan tasks) | What they learn | Level |
-| --- | --- | --- | --- |
-| Task & behavior | 1.A, 2.2 | Task design, NeuroGym, the RSG paradigm, behavioral analysis | Low–med |
-| BPTT RNN | 1.B | RNN dynamics, BPTT training, the model itself | Med |
-| PC RNN *(pair)* | 1.C (PC-A), 2.1 PC-B path | Predictive coding, local learning rules — the core novelty | High |
-| Preprocess & RSA | 1.E, 2.3 | Standardization, representational geometry, RSA | Med |
-| iDSA | 2.4, 2.5, 2.6 | Dynamical similarity, Koopman/DMDc, the dynamics half | Med–high |
+| Track | Files to implement (stubs) | Plan tasks | What they learn | Level |
+| --- | --- | --- | --- | --- |
+| Task & behavior | `task/rsg.py`, `behavior/slope.py` | 1.A, 2.2 | Task design, NeuroGym, the RSG paradigm, behavioral analysis | Low–med |
+| BPTT RNN | `models/bptt_rnn.py` | 1.B | RNN dynamics, BPTT training, the model itself | Med |
+| PC RNN *(pair)* | `models/pc_rnn.py` | 1.C (PC-A), 2.1 PC-B path | Predictive coding, local learning rules — the core novelty | High |
+| Preprocess & RSA | `preprocess/pipeline.py`, `compare/rsa.py` | 1.E, 2.3 | Standardization, representational geometry, RSA | Med |
+| iDSA | `compare/idsa.py` | 2.4, 2.5, 2.6 | Dynamical similarity, Koopman/DMDc, the dynamics half | Med–high |
 
 **Dependency notes handled in the foundation so nobody blocks:** preprocessing
 (1.E) feeds *both* RSA and iDSA — its interface + a stub ship in the scaffold so
