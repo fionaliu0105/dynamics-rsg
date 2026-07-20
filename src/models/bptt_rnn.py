@@ -13,9 +13,11 @@ DYNAMICS (Sohn et al. 2019, Eqs. 5-7; continuous-time, Euler-discretized)::
     alpha = dt / tau ;  J ~ N(0, g^2 / N) ;  B, c_x, x0 ~ U[-1, 1] ;  w_o, c_z = 0
     noise = sqrt(2 * alpha) * noise_sd * N(0, I)     # disable for deterministic checks
 
-READOUT: effector-gated. Two output channels (one per effector); the effector-
-context input selects which channel the loss scores (plan decision 7). Keep BOTH
-channels in `outputs` if you can, or gate to the active one — document your choice.
+READOUT: effector-gated. Two channels, ordered ``EFFECTOR_ORDER`` (== the single
+source of truth ``src.conditions.EFFECTORS``). Both channels are computed every
+step and kept on ``model._last_outputs_both`` ``[B, T, 2]`` for inspection/tests;
+``outputs`` gates to the channel matching each trial's tonic effector-context input
+(``inputs[:, :, 2]``), since the loss only scores the active effector's channel.
 
 TRAINING: masked MSE between ``z`` and the ramp target over the production epoch
 (``Batch.mask``). Adam over BPTT (the paper used Hessian-free; we substitute Adam).
@@ -29,11 +31,16 @@ Requires torch (not importable in the contracts-only smoke env — that's expect
 
 from __future__ import annotations
 
+import math
+
 import torch
 import torch.nn as nn
 
+from src.conditions import EFFECTORS as EFFECTOR_ORDER
 from src.models.base import Model
 from src.training.config import Config
+
+__all__ = ["EFFECTOR_ORDER", "BPTTRNN"]
 
 
 class BPTTRNN(nn.Module, Model):
@@ -42,14 +49,55 @@ class BPTTRNN(nn.Module, Model):
     def __init__(self, cfg: Config):
         super().__init__()
         self.cfg = cfg
-        # TODO(bptt-track): init parameters J, B, c_x, x0, and the effector-gated
-        # readout (w_o, c_z) per the docstring. Seed via cfg.seed for reproducibility.
-        raise NotImplementedError("BPTT track: build parameters (plan 1.B)")
+        n, n_in = cfg.N, self.N_IN
+        n_eff = len(EFFECTOR_ORDER)
+
+        gen = torch.Generator().manual_seed(cfg.seed)
+        self.J = nn.Parameter(torch.randn(n, n, generator=gen) * (cfg.g / math.sqrt(n)))
+        self.B = nn.Parameter(torch.rand(n, n_in, generator=gen) * 2 - 1)
+        self.c_x = nn.Parameter(torch.rand(n, generator=gen) * 2 - 1)
+        self.x0 = nn.Parameter(torch.rand(n, generator=gen) * 2 - 1)
+        # effector-gated readout: one row per channel, EFFECTOR_ORDER order; init 0
+        self.w_o = nn.Parameter(torch.zeros(n_eff, n))
+        self.c_z = nn.Parameter(torch.zeros(n_eff))
+
+        effector_values = [cfg.effector_context[e] for e in EFFECTOR_ORDER]
+        self.register_buffer("_effector_values", torch.tensor(effector_values, dtype=torch.float32))
+
+        self._last_outputs_both: torch.Tensor | None = None
 
     def forward(self, inputs, *, noise: bool = True, return_states: bool = True):
-        """Roll the leaky-tanh dynamics. Returns (outputs [B,T], states [B,T,N]).
+        """Roll the leaky-tanh dynamics. Returns (outputs [B,T], states [B,T,N])."""
+        batch, T, _ = inputs.shape
+        device, dtype = inputs.device, inputs.dtype
 
-        TODO(bptt-track): implement the Euler update loop from the docstring.
-        This method IS the shared forward the PC net will reuse.
-        """
-        raise NotImplementedError("BPTT track: implement forward (plan 1.B)")
+        x = self.x0.to(dtype).unsqueeze(0).expand(batch, -1)
+        alpha = self.cfg.alpha
+        noise_scale = math.sqrt(2 * alpha) * self.cfg.noise_sd
+
+        states_list = []
+        both_list = []
+        for t in range(T):
+            r = torch.tanh(x)
+            states_list.append(r)
+            both_list.append(r @ self.w_o.t() + self.c_z)
+
+            u = inputs[:, t, :]
+            dx = -x + r @ self.J.t() + u @ self.B.t() + self.c_x
+            x = x + alpha * dx
+            if noise:
+                x = x + noise_scale * torch.randn(x.shape, device=device, dtype=dtype)
+
+        states = torch.stack(states_list, dim=1)          # [B, T, N]
+        both = torch.stack(both_list, dim=1)               # [B, T, n_eff]
+        self._last_outputs_both = both
+
+        ctx = inputs[:, 0, 2].unsqueeze(-1)                # [B, 1] tonic effector context
+        effector_values = self._effector_values.to(device=device, dtype=dtype)
+        idx = torch.argmin((ctx - effector_values.unsqueeze(0)).abs(), dim=-1)  # [B]
+        idx_exp = idx.view(batch, 1, 1).expand(batch, T, 1)
+        outputs = both.gather(-1, idx_exp).squeeze(-1)     # [B, T]
+
+        if not return_states:
+            return outputs, None
+        return outputs, states
