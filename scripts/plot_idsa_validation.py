@@ -141,7 +141,8 @@ def _heatmap(ax, mat, labels, title):
 
 
 def main() -> Path:
-    cfg = InputDSAConfig(method="dmdc", rank=6)
+    # builtin backend: a portable, dependency-free demo (no torch/dsa-metric needed).
+    cfg = InputDSAConfig(method="dmdc", rank=6, backend="builtin")
     labels, state, inp = _four_system_distances(cfg)
     ordering = _ordering_distances(cfg)
 

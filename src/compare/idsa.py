@@ -37,13 +37,17 @@ This is what iDSA buys over plain DSA: two systems that share recurrent dynamics
 but have different input matrices stay close in state distance even when their
 input distance is large.
 
-Why this module is self-contained, and not yet a wrapper on the DSA repo. Plan 0.6
-flags the DSA repo (it pulls kooplearn and pot) as the shakiest install, and this
-environment runs numpy 2.4.x, which sits outside those pins. AGENTS.md's dependency
-rule says not to force a shared downgrade for one package, so we don't. Keeping this
-numpy/scipy-only means the whole iDSA track is testable today, and the upstream repo
-can be dropped in behind ``fit_operators`` / ``input_dsa`` later to cross-check at
-plan 0.6/0.7. That check is worth doing, but it is not a blocker.
+Two backends, one interface. By default this calls the official InputDSA package
+(``dsa-metric``, the mitchellostrow/DSA repo) to fit the operators and compute the
+distance, selected by ``InputDSAConfig.backend='dsa-metric'``. That package pulls
+torch and pydmd and wants numpy 2.5, so it lives in its own env (requirements-idsa.txt)
+apart from the modeling env, per AGENTS.md's dependency rule. When it is not
+importable the code falls back to ``backend='builtin'``: a numpy/scipy-only
+reimplementation from the paper that runs anywhere and doubles as a cross-check (its
+distances agree with the official package to about 1e-2 on synthetic systems). Both
+backends share the same ``fit_operators`` / ``input_dsa`` / ``Operators`` interface,
+so callers never change. The builtin estimators (``dmdc`` / ``subspace_dmdc``) and the
+controllability-Procrustes metric below are that fallback.
 
 Definition of done:
     Stage 3: finite, reproducible BPTT/PC distances on smoke-scale data.
@@ -55,6 +59,7 @@ paper at https://arxiv.org/abs/2510.25943.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -74,6 +79,7 @@ class InputDSAConfig:
     "matched k and time bins").
     """
 
+    backend: str = "dsa-metric"   # "dsa-metric" (official pkg) or "builtin" (numpy fallback)
     method: str = "dmdc"          # "dmdc" (Alg 3) or "subspace" (Alg 1, partial obs)
     rank: int = 10                # state-space rank r; matched across systems
     delays: int = 1              # delay-embedding order q (1 = no lift). Subspace uses >1
@@ -334,6 +340,77 @@ def subspace_dmdc(
 
 
 # ---------------------------------------------------------------------------
+# Backend selection: official dsa-metric package, or the builtin numpy fallback
+# ---------------------------------------------------------------------------
+
+_DSA_MODULE = None       # cached DSA package handle
+_DSA_TRIED = False       # have we attempted the import yet?
+_DSA_WARNED = False      # have we already warned about the fallback?
+
+
+def _get_dsa():
+    """Import the official ``DSA`` package once and cache it (None if unavailable).
+
+    The import is lazy on purpose: DSA pulls torch, and forcing that import whenever
+    ``idsa`` is imported would slow down (or break) the modeling env, where the
+    package is not installed. Only the dsa-metric backend calls this.
+    """
+    global _DSA_MODULE, _DSA_TRIED
+    if not _DSA_TRIED:
+        _DSA_TRIED = True
+        try:
+            import DSA  # official package: pip install dsa-metric (own env)
+            _DSA_MODULE = DSA
+        except Exception:
+            _DSA_MODULE = None
+    return _DSA_MODULE
+
+
+def _resolve_backend(backend: str) -> str:
+    """Return the backend to actually use, falling back to builtin when DSA is absent."""
+    if backend == "builtin":
+        return "builtin"
+    if backend == "dsa-metric":
+        if _get_dsa() is not None:
+            return "dsa-metric"
+        global _DSA_WARNED
+        if not _DSA_WARNED:
+            _DSA_WARNED = True
+            warnings.warn(
+                "dsa-metric is not importable; using the builtin iDSA backend. Install "
+                "it in a separate env (requirements-idsa.txt) to use the official package.",
+                RuntimeWarning,
+            )
+        return "builtin"
+    raise ValueError(f"unknown backend {backend!r}; use 'dsa-metric' or 'builtin'")
+
+
+def _fit_operators_official(states: np.ndarray, inputs: np.ndarray, cfg: InputDSAConfig) -> Operators:
+    """Fit A, B with the official DMDc / SubspaceDMDc, wrapped in :class:`Operators`."""
+    dsa = _get_dsa()
+    states, inputs = _as_trajectories(states, inputs)     # [n_traj, time, dim]
+    if cfg.method == "subspace":
+        model = dsa.SubspaceDMDc(
+            states, control_data=inputs, n_delays=max(cfg.delays, 2),
+            rank=cfg.rank, lamb=cfg.ridge, backend="n4sid",
+        )
+    elif cfg.method == "dmdc":
+        model = dsa.DMDc(
+            states, control_data=inputs, n_delays=cfg.delays,
+            rank_output=cfg.rank, lamb=cfg.ridge,
+        )
+    else:
+        raise ValueError(f"unknown method {cfg.method!r}; use 'dmdc' or 'subspace'")
+    model.fit()
+    A = np.asarray(model.A, dtype=float)
+    B = np.asarray(model.B, dtype=float)
+    return Operators(
+        A=A, B=B, rank=A.shape[0], method=cfg.method, delays=cfg.delays,
+        meta={"backend": "dsa-metric", "n_in": B.shape[1]},
+    )
+
+
+# ---------------------------------------------------------------------------
 # Public estimator dispatch
 # ---------------------------------------------------------------------------
 
@@ -346,10 +423,13 @@ def fit_operators(
     ``states``: [n_traj, time, k] (or a single [time, k]); ``inputs``: matching
     [n_traj, time, n_in]. Inputs must be time-aligned to states (AGENTS.md,
     "store/ keeps the input time series"). Returns fitted :class:`Operators`.
-    Dispatches on ``cfg.method``: ``"dmdc"`` (default, fully observed) or
-    ``"subspace"`` (partial observation, i.e. neural data).
+    Uses the backend in ``cfg.backend`` (dsa-metric or builtin), and within a backend
+    dispatches on ``cfg.method``: ``"dmdc"`` (fully observed) or ``"subspace"``
+    (partial observation, i.e. neural data).
     """
     cfg = cfg or InputDSAConfig()
+    if _resolve_backend(cfg.backend) == "dsa-metric":
+        return _fit_operators_official(states, inputs, cfg)
     if cfg.method == "dmdc":
         return dmdc(states, inputs, cfg)
     if cfg.method == "subspace":
@@ -399,6 +479,27 @@ def _orthogonal_procrustes(K1: np.ndarray, K2: np.ndarray) -> np.ndarray:
     return U @ Vt
 
 
+def _input_dsa_official(op_a: Operators, op_b: Operators) -> Dict[str, float]:
+    """Distance components from the official controllability metric.
+
+    ``ControllabilitySimilarityTransformDist.fit_score(A, B, A_control, B_control)``
+    has a confusing signature: ``A``/``B`` are the two systems' STATE matrices and
+    ``A_control``/``B_control`` are their INPUT matrices. With
+    ``return_distance_components=True`` (euclidean) it returns
+    ``(full controllability, state, control)``, matching our dict keys.
+    """
+    dsa = _get_dsa()
+    metric = dsa.ControllabilitySimilarityTransformDist(
+        score_method="euclidean", compare="joint", return_distance_components=True,
+    )
+    controllability, state, control = metric.fit_score(op_a.A, op_b.A, op_a.B, op_b.B)
+    return {
+        "distance": float(controllability),
+        "state_distance": float(state),
+        "input_distance": float(control),
+    }
+
+
 def input_dsa(
     op_a: Operators, op_b: Operators, cfg: Optional[InputDSAConfig] = None
 ) -> Dict[str, float]:
@@ -411,7 +512,9 @@ def input_dsa(
         dynamics.
       * ``input_distance``: ||C B1 - B2||_F (Eq. 10), how input is read into state.
     The single orthogonal C is fit once on the controllability matrix and reused, so
-    state and input distances are read in a common aligned frame.
+    state and input distances are read in a common aligned frame. With
+    ``cfg.backend='dsa-metric'`` the official package computes the same three
+    quantities instead.
     """
     cfg = cfg or InputDSAConfig()
     if op_a.A.shape != op_b.A.shape:
@@ -422,6 +525,8 @@ def input_dsa(
         raise ValueError(
             f"operators must share input dim; got {op_a.B.shape[1]} vs {op_b.B.shape[1]}"
         )
+    if _resolve_backend(cfg.backend) == "dsa-metric":
+        return _input_dsa_official(op_a, op_b)
     K1 = controllability_matrix(
         op_a.A, op_a.B, cfg.n_powers, cfg.augment_transpose, cfg.power_norm_cap
     )
@@ -460,49 +565,44 @@ def dsa_distance(op_a: Operators, op_b: Operators, cfg: Optional[InputDSAConfig]
 # through the same fitted preprocessor before fitting operators (AGENTS.md,
 # "Identical preprocessing"), which keeps raw, unstandardized activity out of the
 # comparison. The preprocessor is the Preprocess & RSA track's object
-# (src.preprocess.Preprocessor, fitted on a reference); this module only needs its
-# stub interface,
-#   preprocessor.transform(system) -> [cond, n_time_bins, k]
-# and nothing else. Until that stub is implemented these functions will raise from
-# the preprocessor, which is intended. The fit and compare code above already works.
+# (src.preprocess.Preprocessor, fitted on a reference). We use its states+inputs
+# entry point,
+#   preprocessor.transform_with_inputs(states, inputs)
+#       -> ([cond, n_time_bins, k], [cond, n_time_bins, n_in])
+# which the Preprocess track added for iDSA: states get z-score -> PCA(k) -> warp,
+# inputs get the same per-condition warp and nothing else, so the two stay sample-
+# aligned for DMDc. That entry point requires all 20 canonical conditions, so we
+# always load the full set and subset AFTER preprocessing (never preprocess a band).
 
 
-def _load_system(store, model: str, seed: int, preprocessor, conditions) -> Tuple[np.ndarray, np.ndarray]:
-    """Gather [cond, time, units] states + inputs for one (model, seed) and preprocess.
+def _load_system(store, model: str, seed: int, preprocessor) -> Tuple[np.ndarray, np.ndarray]:
+    """Read the 20 canonical conditions for (model, seed) and run the shared warp.
 
-    ``preprocessor`` must expose ``.transform(system) -> [cond, n_time_bins, k]``.
-    Inputs are binned to the same time base as states by block-mean pooling, so they
-    stay aligned after the states' temporal warp (iDSA needs inputs aligned to
-    states). Returns ``(states_pp, inputs_pp)``.
+    Trajectories are kept ragged (time length varies with ts/tp) and handed to the
+    preprocessor as lists, exactly as ``scripts/run_rsa.py::stack_system`` does.
+    Returns preprocessed ``(states [20, n_time_bins, k], inputs [20, n_time_bins,
+    n_in])`` on a single time base.
     """
     raw_states, raw_inputs = [], []
-    for cond in conditions:
+    for cond in _canonical_conditions():
         rec = store.read(model, seed, cond)
         raw_states.append(np.asarray(rec.states, dtype=float))
         raw_inputs.append(np.asarray(rec.inputs, dtype=float))
-    states = np.stack(raw_states, axis=0)                # [cond, time, units]
-    inputs = np.stack(raw_inputs, axis=0)                # [cond, time, n_in]
-    states_pp = np.asarray(preprocessor.transform(states), dtype=float)
-    n_bins = states_pp.shape[1]
-    inputs_pp = _bin_to(inputs, n_bins)                  # keep inputs aligned to states
-    return states_pp, inputs_pp
+    states_pp, inputs_pp = preprocessor.transform_with_inputs(raw_states, raw_inputs)
+    return np.asarray(states_pp, dtype=float), np.asarray(inputs_pp, dtype=float)
 
 
-def _bin_to(inputs: np.ndarray, n_bins: int) -> np.ndarray:
-    """Block-mean pool the time axis of [cond, time, n_in] down to ``n_bins`` bins.
+def _subset(states: np.ndarray, inputs: np.ndarray, conditions) -> Tuple[np.ndarray, np.ndarray]:
+    """Select a subset of the 20 preprocessed conditions by their canonical index.
 
-    Matches the state preprocessor's temporal binning so inputs remain time-aligned
-    to the preprocessed states. If already at ``n_bins``, returned unchanged.
+    Subsetting happens on already-preprocessed arrays so every system still passed
+    through the identical full-set warp (the preprocessor needs all 20 to fit its
+    per-system PCA and time base). Used to resolve a comparison by ts band (2.6).
     """
-    cond, T, n_in = inputs.shape
-    if T == n_bins:
-        return inputs
-    edges = np.linspace(0, T, n_bins + 1).astype(int)
-    out = np.empty((cond, n_bins, n_in), dtype=float)
-    for b in range(n_bins):
-        lo, hi = edges[b], max(edges[b] + 1, edges[b + 1])
-        out[:, b] = inputs[:, lo:hi].mean(axis=1)
-    return out
+    from src.conditions import condition_index
+
+    idx = [condition_index(c) for c in conditions]
+    return states[idx], inputs[idx]
 
 
 def stage3_bptt_vs_pc(
@@ -519,13 +619,17 @@ def stage3_bptt_vs_pc(
     For each seed, fit operators for both learning rules on identically preprocessed
     latents and return the InputDSA distances. Seeds are the unit of evidence
     (AGENTS.md), so this returns the per-seed spread rather than a point estimate.
+    ``conditions`` optionally restricts the comparison to a subset (e.g. a ts band),
+    applied after preprocessing.
     """
     cfg = cfg or InputDSAConfig()
-    conditions = list(conditions) if conditions is not None else _default_conditions()
     out: Dict[int, Dict[str, float]] = {}
     for seed in seeds:
-        s_a, u_a = _load_system(store, model_a, seed, preprocessor, conditions)
-        s_b, u_b = _load_system(store, model_b, seed, preprocessor, conditions)
+        s_a, u_a = _load_system(store, model_a, seed, preprocessor)
+        s_b, u_b = _load_system(store, model_b, seed, preprocessor)
+        if conditions is not None:
+            s_a, u_a = _subset(s_a, u_a, conditions)
+            s_b, u_b = _subset(s_b, u_b, conditions)
         op_a = fit_operators(s_a, u_a, cfg)
         op_b = fit_operators(s_b, u_b, cfg)
         out[seed] = input_dsa(op_a, op_b, cfg)
@@ -551,12 +655,17 @@ def stage4_model_to_dmfc(
     stranded at the end (AGENTS.md; plan 2.5).
     """
     cfg = cfg or InputDSAConfig(method="subspace")
-    conditions = list(conditions) if conditions is not None else _default_conditions()
+    dmfc_states = np.asarray(dmfc_states, dtype=float)
+    dmfc_inputs = np.asarray(dmfc_inputs, dtype=float)
+    if conditions is not None:
+        dmfc_states, dmfc_inputs = _subset(dmfc_states, dmfc_inputs, conditions)
     dmfc_op = fit_operators(dmfc_states, dmfc_inputs, cfg)
     out: Dict[Tuple[str, int], Dict[str, float]] = {}
     for model in models:
         for seed in seeds:
-            s, u = _load_system(store, model, seed, preprocessor, conditions)
+            s, u = _load_system(store, model, seed, preprocessor)
+            if conditions is not None:
+                s, u = _subset(s, u, conditions)
             op = fit_operators(s, u, cfg)
             out[(model, seed)] = input_dsa(op, dmfc_op, cfg)
     return out
@@ -564,53 +673,48 @@ def stage4_model_to_dmfc(
 
 def across_ts(
     store,
-    models: Sequence[str],
     seeds: Sequence[int],
     preprocessor,
     cfg: Optional[InputDSAConfig] = None,
-    reference: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Dict[int, Dict[str, float]]]:
+    dmfc: Optional[Tuple[np.ndarray, np.ndarray]] = None,
+    models: Tuple[str, str] = ("bptt", "pc"),
+) -> Dict[str, Any]:
     """2.6 (RQ2): the Stage 3/4 contrast resolved by interval band (short vs long).
 
-    Splits the condition set by prior/ts band and runs the requested comparison
-    within each band, yielding a signature-vs-ts curve per rule with seed spread
-    (plan 2.6 check). ``reference`` selects the comparison: default is rule-vs-rule
-    (Stage 3) per band; pass a neural system to compare each model to DMFC per band.
+    Splits the 20 conditions into short- and long-prior bands and runs the comparison
+    within each band, giving a signature-vs-ts curve per rule with seed spread (plan
+    2.6 check). With ``dmfc=None`` this is Stage 3 (rule-vs-rule) per band. Pass
+    ``dmfc=(states, inputs)`` (already preprocessed neural data) for the model-to-DMFC
+    contrast per band. Each system is preprocessed on the full 20 conditions, then the
+    band is subset out.
     """
     cfg = cfg or InputDSAConfig()
-    bands = _ts_bands()
-    out: Dict[str, Dict[int, Dict[str, float]]] = {}
-    for band_name, band_conditions in bands.items():
-        if reference is None:
+    out: Dict[str, Any] = {}
+    for band_name, band_conditions in _ts_bands().items():
+        if dmfc is None:
             out[band_name] = stage3_bptt_vs_pc(
-                store, seeds, preprocessor, band_conditions, cfg
+                store, seeds, preprocessor, band_conditions, cfg,
+                model_a=models[0], model_b=models[1],
             )
         else:
-            out[band_name] = {
-                seed: input_dsa(
-                    fit_operators(
-                        *_load_system(store, models[0], seed, preprocessor, band_conditions), cfg
-                    ),
-                    reference["op"],
-                    cfg,
-                )
-                for seed in seeds
-            }
+            out[band_name] = stage4_model_to_dmfc(
+                store, models, seeds, preprocessor, dmfc[0], dmfc[1],
+                conditions=band_conditions, cfg=cfg,
+            )
     return out
 
 
-def _default_conditions():
-    """The canonical 20-condition set, imported lazily to keep this module light."""
+def _canonical_conditions():
+    """The canonical 20 conditions in fixed order (imported lazily to keep the core
+    math importable without the src.conditions schema)."""
     from src.conditions import CONDITIONS
 
-    return list(CONDITIONS)
+    return CONDITIONS
 
 
 def _ts_bands() -> Dict[str, list]:
     """Group the canonical conditions into short- and long-prior bands (plan 2.6)."""
-    from src.conditions import CONDITIONS
-
     bands: Dict[str, list] = {"short": [], "long": []}
-    for c in CONDITIONS:
+    for c in _canonical_conditions():
         bands[c.prior].append(c)
     return bands

@@ -17,6 +17,10 @@ It also covers the basic contracts: finite and reproducible distances, dimension
 guards, and that Subspace DMDc runs and returns finite results on partially observed
 data.
 
+These pin ``backend="builtin"`` on purpose: they validate the numpy/scipy math
+directly, independent of whether the official dsa-metric package is installed. The
+two backends are checked against each other in ``tests/test_idsa_backends.py``.
+
 Run from repo root::
 
     python tests/test_idsa.py       # plain asserts, no pytest needed
@@ -83,7 +87,7 @@ def test_identical_systems_near_zero():
     rng = np.random.default_rng(0)
     n, m = 6, 2
     A, B = _stable_matrix(rng, n, 0.9), rng.standard_normal((n, m))
-    cfg = InputDSAConfig(method="dmdc", rank=n)
+    cfg = InputDSAConfig(method="dmdc", rank=n, backend="builtin")
     s1, u1 = _simulate(A, B, rng)
     s2, u2 = _simulate(A, B, rng)          # same operators, different noise/inits
     op1, op2 = fit_operators(s1, u1, cfg), fit_operators(s2, u2, cfg)
@@ -101,7 +105,7 @@ def test_perturbed_dynamics_larger_than_identical():
     rng = np.random.default_rng(1)
     n, m = 6, 2
     A, B = _stable_matrix(rng, n, 0.9), rng.standard_normal((n, m))
-    cfg = InputDSAConfig(method="dmdc", rank=n)
+    cfg = InputDSAConfig(method="dmdc", rank=n, backend="builtin")
     s1, u1 = _simulate(A, B, rng)
     s2, u2 = _simulate(A, B, rng)
     A_pert = A + 0.15 * rng.standard_normal((n, n))
@@ -118,7 +122,7 @@ def test_shuffled_time_is_far():
     rng = np.random.default_rng(2)
     n, m = 6, 2
     A, B = _stable_matrix(rng, n, 0.9), rng.standard_normal((n, m))
-    cfg = InputDSAConfig(method="dmdc", rank=n)
+    cfg = InputDSAConfig(method="dmdc", rank=n, backend="builtin")
     s1, u1 = _simulate(A, B, rng)
     s2, u2 = _simulate(A, B, rng)
     # destroy the temporal order of one system's states within each trajectory
@@ -148,7 +152,7 @@ def test_demix_same_dynamics_different_input():
     B1 = rng.standard_normal((n, m)) * 0.5
     B2 = rng.standard_normal((n, m)) * 2.0        # very different input mapping
     A_other = _stable_matrix(rng, n, 0.8)         # a genuinely different recurrent A
-    cfg = InputDSAConfig(method="dmdc", rank=n)
+    cfg = InputDSAConfig(method="dmdc", rank=n, backend="builtin")
 
     op_a = fit_operators(*_simulate(A, B1, rng), cfg)
     op_b = fit_operators(*_simulate(A, B2, rng), cfg)      # same A, different B
@@ -174,7 +178,7 @@ def test_reproducible_and_symmetric():
     rng = np.random.default_rng(4)
     n, m = 5, 2
     A, B = _stable_matrix(rng, n, 0.9), rng.standard_normal((n, m))
-    cfg = InputDSAConfig(method="dmdc", rank=n)
+    cfg = InputDSAConfig(method="dmdc", rank=n, backend="builtin")
     op1 = fit_operators(*_simulate(A, B, rng), cfg)
     op2 = fit_operators(*_simulate(A, B, rng), cfg)
     d_ab = dsa_distance(op1, op2, cfg)
@@ -204,7 +208,7 @@ def test_subspace_dmdc_runs_partial_obs():
     B = rng.standard_normal((n_full, m))
     states_full, inputs = _simulate(A, B, rng, n_traj=10, T=200)
     states_obs = states_full[:, :, :n_obs]              # observe only 3 of 12 dims
-    cfg = InputDSAConfig(method="subspace", rank=6, delays=4)
+    cfg = InputDSAConfig(method="subspace", rank=6, delays=4, backend="builtin")
     op = subspace_dmdc(states_obs, inputs, cfg)
     assert np.all(np.isfinite(op.A)) and np.all(np.isfinite(op.B))
     assert op.A.shape == (op.rank, op.rank)
@@ -230,7 +234,7 @@ def test_subspace_dmdc_demixes_partial_obs():
     A1, A2 = _stable_matrix(rng, n_full, 0.9), _stable_matrix(rng, n_full, 0.8)
     B1 = rng.standard_normal((n_full, m)) * 0.6
     B2 = rng.standard_normal((n_full, m)) * 1.8
-    cfg = InputDSAConfig(method="subspace", rank=8, delays=6)
+    cfg = InputDSAConfig(method="subspace", rank=8, delays=6, backend="builtin")
 
     def op(A, B):
         s, u = _simulate(A, B, rng, n_traj=12, T=400)

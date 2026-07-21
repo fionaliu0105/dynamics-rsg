@@ -1,0 +1,17 @@
+# Isolated iDSA-compute environment: the official InputDSA package (dsa-metric).
+# Kept SEPARATE from the modeling env because dsa-metric pulls torch + pydmd and wants
+# numpy 2.5, which conflicts with the modeling env's pins. This env only runs the iDSA
+# backend (src/compare/idsa.py with backend="dsa-metric") and the backend cross-check
+# (tests/test_idsa_backends.py). The modeling env uses the builtin numpy fallback and
+# never imports DSA. See AGENTS.md ("Dependency fragility").
+#
+# Install:
+#   python -m venv .idsa-venv
+#   .idsa-venv/bin/pip install -r requirements-idsa.txt
+#   .idsa-venv/bin/pip install -e .        # so `import src.*` resolves
+#
+# Cross-check that the two backends agree (plan 0.6/0.7):
+#   .idsa-venv/bin/python -m pytest tests/test_idsa_backends.py
+
+dsa-metric          # official InputDSA/DSA (Huang & Ostrow et al. 2025); pulls torch, pydmd, pot
+pytest
