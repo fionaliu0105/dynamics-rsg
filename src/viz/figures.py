@@ -66,3 +66,73 @@ def summary_distance_figure(
         ax.set_title(f"{metric}: distance to DMFC")
         ax.set_ylabel("distance (per-seed spread)")
     return savefig(fig, "summary_distance_to_dmfc", out_dir)
+
+
+# --- RSA-track panels (plan 3.3) -----------------------------------------------
+# These read an already-computed RDM (20x20, canonical condition order) and write a
+# file. They never build the RDM or re-extract activity — that is src.compare.rsa.
+
+def rdm_heatmap(rdm, name: str = "rdm_heatmap", out_dir: Path = RESULTS_DIR) -> Path:
+    """Heatmap of a 20x20 RDM in the canonical condition order.
+
+    ``rdm``: [n_cond, n_cond] dissimilarity matrix from src.compare.rsa.build_rdm.
+    Ticks are labelled with the canonical Condition labels so the prior/effector/ts
+    structure is legible.
+    """
+    from src.conditions import CONDITIONS  # local import keeps this module import-light
+
+    rdm = np.asarray(rdm, dtype=float)
+    labels = [c.label for c in CONDITIONS]
+    fig, ax = plt.subplots(figsize=(7, 6))
+    im = ax.imshow(rdm, cmap="viridis", aspect="equal")
+    ax.set_xticks(range(len(labels)))
+    ax.set_yticks(range(len(labels)))
+    ax.set_xticklabels(labels, rotation=90, fontsize=6)
+    ax.set_yticklabels(labels, fontsize=6)
+    ax.set_title("RDM (dissimilarity)")
+    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="dissimilarity")
+    return savefig(fig, name, out_dir)
+
+
+def rdm_mds(rdm, name: str = "rdm_mds", out_dir: Path = RESULTS_DIR) -> Path:
+    """2-D MDS embedding of a 20x20 RDM, colored by prior and marked by effector.
+
+    Uses classical (Torgerson) MDS via numpy eigendecomposition — no sklearn needed
+    (sklearn is ABI-broken in the base env). Points are colored short/long and marked
+    eye/hand so the prior geometry and effector split are visible at a glance.
+    """
+    from src.conditions import CONDITIONS
+
+    rdm = np.asarray(rdm, dtype=float)
+    coords = _classical_mds(rdm, n_components=2)
+    fig, ax = plt.subplots(figsize=(6, 5))
+    color = {"short": "tab:blue", "long": "tab:red"}
+    marker = {"eye": "o", "hand": "^"}
+    seen = set()
+    for i, c in enumerate(CONDITIONS):
+        key = (c.prior, c.effector)
+        ax.scatter(
+            coords[i, 0], coords[i, 1],
+            c=color[c.prior], marker=marker[c.effector], s=60,
+            edgecolors="k", linewidths=0.5,
+            label=f"{c.prior}/{c.effector}" if key not in seen else None,
+        )
+        seen.add(key)
+    ax.set_title("RDM — classical MDS")
+    ax.set_xlabel("MDS 1")
+    ax.set_ylabel("MDS 2")
+    ax.legend(fontsize=7, loc="best")
+    return savefig(fig, name, out_dir)
+
+
+def _classical_mds(rdm: np.ndarray, n_components: int = 2) -> np.ndarray:
+    """Torgerson classical MDS: double-center -D^2/2, take top eigenvectors."""
+    d2 = np.asarray(rdm, dtype=float) ** 2
+    n = d2.shape[0]
+    j = np.eye(n) - np.ones((n, n)) / n
+    b = -0.5 * j @ d2 @ j
+    b = 0.5 * (b + b.T)                              # symmetrize
+    vals, vecs = np.linalg.eigh(b)
+    order = np.argsort(vals)[::-1][:n_components]
+    pos = np.clip(vals[order], 0.0, None)
+    return vecs[:, order] * np.sqrt(pos)
