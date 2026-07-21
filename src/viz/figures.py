@@ -19,7 +19,7 @@ each track fills in its panel. Uses matplotlib (present) + numpy.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, Sequence
+from typing import Dict, Mapping, Sequence
 
 import matplotlib
 
@@ -68,71 +68,117 @@ def summary_distance_figure(
     return savefig(fig, "summary_distance_to_dmfc", out_dir)
 
 
-# --- RSA-track panels (plan 3.3) -----------------------------------------------
-# These read an already-computed RDM (20x20, canonical condition order) and write a
-# file. They never build the RDM or re-extract activity — that is src.compare.rsa.
-
-def rdm_heatmap(rdm, name: str = "rdm_heatmap", out_dir: Path = RESULTS_DIR) -> Path:
-    """Heatmap of a 20x20 RDM in the canonical condition order.
-
-    ``rdm``: [n_cond, n_cond] dissimilarity matrix from src.compare.rsa.build_rdm.
-    Ticks are labelled with the canonical Condition labels so the prior/effector/ts
-    structure is legible.
-    """
-    from src.conditions import CONDITIONS  # local import keeps this module import-light
-
-    rdm = np.asarray(rdm, dtype=float)
-    labels = [c.label for c in CONDITIONS]
-    fig, ax = plt.subplots(figsize=(7, 6))
-    im = ax.imshow(rdm, cmap="viridis", aspect="equal")
-    ax.set_xticks(range(len(labels)))
-    ax.set_yticks(range(len(labels)))
-    ax.set_xticklabels(labels, rotation=90, fontsize=6)
-    ax.set_yticklabels(labels, fontsize=6)
-    ax.set_title("RDM (dissimilarity)")
-    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="dissimilarity")
+def training_loss_figure(
+    losses: Sequence[float],
+    name: str = "training_loss",
+    out_dir: Path = RESULTS_DIR,
+) -> Path:
+    """Loss-vs-iteration curve for one seed's training run."""
+    fig, ax = plt.subplots(figsize=(5, 4))
+    ax.plot(np.arange(len(losses)), losses)
+    ax.set_xlabel("iteration")
+    ax.set_ylabel("masked MSE loss")
+    ax.set_title("training loss")
     return savefig(fig, name, out_dir)
 
 
-def rdm_mds(rdm, name: str = "rdm_mds", out_dir: Path = RESULTS_DIR) -> Path:
-    """2-D MDS embedding of a 20x20 RDM, colored by prior and marked by effector.
+def unit_activity_figure(
+    states: np.ndarray,
+    dt: float,
+    n_units: int = 8,
+    name: str = "unit_activity",
+    out_dir: Path = RESULTS_DIR,
+    title: str = "unit activity (r = tanh(x))",
+) -> Path:
+    """Time traces of a handful of units' activity for ONE condition.
 
-    Uses classical (Torgerson) MDS via numpy eigendecomposition — no sklearn needed
-    (sklearn is ABI-broken in the base env). Points are colored short/long and marked
-    eye/hand so the prior geometry and effector split are visible at a glance.
+    Args:
+        states: ``[time, units]`` (or ``[trials, time, units]`` — first trial used).
+        dt: ms per step, to label the x-axis in ms.
     """
-    from src.conditions import CONDITIONS
+    states = np.asarray(states)
+    if states.ndim == 3:
+        states = states[0]
+    time_ms = np.arange(states.shape[0]) * dt
+    idx = np.linspace(0, states.shape[1] - 1, min(n_units, states.shape[1])).astype(int)
 
-    rdm = np.asarray(rdm, dtype=float)
-    coords = _classical_mds(rdm, n_components=2)
-    fig, ax = plt.subplots(figsize=(6, 5))
-    color = {"short": "tab:blue", "long": "tab:red"}
-    marker = {"eye": "o", "hand": "^"}
-    seen = set()
-    for i, c in enumerate(CONDITIONS):
-        key = (c.prior, c.effector)
-        ax.scatter(
-            coords[i, 0], coords[i, 1],
-            c=color[c.prior], marker=marker[c.effector], s=60,
-            edgecolors="k", linewidths=0.5,
-            label=f"{c.prior}/{c.effector}" if key not in seen else None,
-        )
-        seen.add(key)
-    ax.set_title("RDM — classical MDS")
-    ax.set_xlabel("MDS 1")
-    ax.set_ylabel("MDS 2")
-    ax.legend(fontsize=7, loc="best")
+    fig, ax = plt.subplots(figsize=(6, 4))
+    for i in idx:
+        ax.plot(time_ms, states[:, i], lw=1)
+    ax.set_xlabel("time (ms)")
+    ax.set_ylabel("r")
+    ax.set_title(title)
     return savefig(fig, name, out_dir)
 
 
-def _classical_mds(rdm: np.ndarray, n_components: int = 2) -> np.ndarray:
-    """Torgerson classical MDS: double-center -D^2/2, take top eigenvectors."""
-    d2 = np.asarray(rdm, dtype=float) ** 2
-    n = d2.shape[0]
-    j = np.eye(n) - np.ones((n, n)) / n
-    b = -0.5 * j @ d2 @ j
-    b = 0.5 * (b + b.T)                              # symmetrize
-    vals, vecs = np.linalg.eigh(b)
-    order = np.argsort(vals)[::-1][:n_components]
-    pos = np.clip(vals[order], 0.0, None)
-    return vecs[:, order] * np.sqrt(pos)
+def output_vs_target_figure(
+    outputs: np.ndarray,
+    target: np.ndarray,
+    dt: float,
+    labels: Sequence[str],
+    threshold: float | None = None,
+    name: str = "output_vs_target",
+    out_dir: Path = RESULTS_DIR,
+) -> Path:
+    """Overlay produced output ``z_t`` against the ramp target, one line per trial."""
+    outputs = np.asarray(outputs)
+    target = np.asarray(target)
+    time_ms = np.arange(outputs.shape[1]) * dt
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+    colors = plt.cm.viridis(np.linspace(0, 1, outputs.shape[0]))
+    for i, label in enumerate(labels):
+        ax.plot(time_ms, outputs[i], color=colors[i], label=f"{label} (out)")
+        ax.plot(time_ms, target[i], color=colors[i], ls="--", alpha=0.5)
+    if threshold is not None:
+        ax.axhline(threshold, color="k", ls=":", lw=1, label="threshold")
+    ax.set_xlabel("time (ms)")
+    ax.set_ylabel("z")
+    ax.set_title("output (solid) vs. target ramp (dashed)")
+    ncol = 1 if len(labels) <= 8 else 2
+    ax.legend(fontsize=6, loc="upper left", ncol=ncol)
+    return savefig(fig, name, out_dir)
+
+
+def pca_trajectories_figure(
+    states_by_condition: Mapping[str, np.ndarray],
+    n_components: int = 2,
+    name: str = "pca_trajectories",
+    out_dir: Path = RESULTS_DIR,
+    color_by: Mapping[str, str] | None = None,
+    linestyle_by: Mapping[str, str] | None = None,
+) -> Path:
+    """PCA trajectories per condition — Fig 7C-style prior-support curvature panel.
+
+    Args:
+        states_by_condition: ``{condition_label: states [time, units]}``, already on
+            a shared time base. PCA is fit jointly (concatenated over conditions and
+            time) so all trajectories share one projection.
+        color_by: optional ``{condition_label: color}`` (e.g. by prior) — falls back
+            to a categorical colormap over conditions if omitted.
+
+    No sklearn dependency: PCA via numpy SVD on the mean-centered pooled activity.
+    """
+    labels = list(states_by_condition)
+    pooled = np.concatenate([np.asarray(states_by_condition[k]) for k in labels], axis=0)
+    mean = pooled.mean(axis=0, keepdims=True)
+    _, _, vt = np.linalg.svd(pooled - mean, full_matrices=False)
+    components = vt[:n_components]  # [n_components, units]
+
+    if color_by is None:
+        cmap = plt.cm.tab10(np.linspace(0, 1, max(len(labels), 1)))
+        color_by = {lab: cmap[i] for i, lab in enumerate(labels)}
+
+    fig, ax = plt.subplots(figsize=(5, 5))
+    for lab in labels:
+        traj = (np.asarray(states_by_condition[lab]) - mean) @ components.T  # [time, n_components]
+        ls = linestyle_by[lab] if linestyle_by else "-"
+        ax.plot(traj[:, 0], traj[:, 1], color=color_by[lab], ls=ls, label=lab, lw=1.5)
+        ax.scatter(*traj[0, :2], color=color_by[lab], marker="o", s=25)   # start
+        ax.scatter(*traj[-1, :2], color=color_by[lab], marker="s", s=25)  # end
+    ax.set_xlabel("PC1")
+    ax.set_ylabel("PC2")
+    ax.set_title("condition trajectories in PCA space (o=start, sq=end)")
+    ncol = 2 if len(labels) <= 10 else 3
+    ax.legend(fontsize=5, loc="best", ncol=ncol)
+    return savefig(fig, name, out_dir)
