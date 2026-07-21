@@ -48,7 +48,16 @@ class Config:
     pulse_height: float = 0.4                 # Ready/Set pulse amplitude
     pulse_width: float = 20.0                 # ms
     ready_onset: float = 100.0                # ms from trial start to Ready
-    total_time: float = 2600.0               # ms; covers ready + max ts + production
+    # total_time: raised 2600 -> 3000 on 2026-07-20. The old 2600 could not contain the
+    # longest condition. A trial spans ready_onset + ts (Ready->Set) + ts (Set->Go, tp~=ts)
+    # + prod_hold; for max ts=1200 (long/1200) that is 100 + 1200 + 1200 + 300 = 2800 ms
+    # even with NO jitter, and long/1100 was 2600 exactly (zero headroom). Training jitter
+    # t_m~N(ts, ts*w_m) pushes Set later still (~+180 ms = 3*sigma at ts=1200, default
+    # w_m=0.05), so at 2600 the long-prior production epoch/prod_hold truncated off the
+    # [B, n_steps, 3] canvas and corrupted the target+mask. 3000 = 100 + 2*1200 + 300 + 200
+    # headroom; the task generator should clip rarer t_m beyond that. n_steps stays an
+    # integer at dt=1 (3000) and dt=5 (600).
+    total_time: float = 3000.0               # ms; ready + 2*max_ts + prod_hold + jitter headroom
     prod_hold: float = 300.0                  # ms held at threshold after ts
 
     # --- UNVALIDATED reconstruction constants (expose, never trust) -------------
