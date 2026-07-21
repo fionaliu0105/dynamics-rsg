@@ -19,7 +19,7 @@ each track fills in its panel. Uses matplotlib (present) + numpy.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, Mapping, Sequence
+from typing import Dict, Mapping, Optional, Sequence, Tuple
 
 import matplotlib
 
@@ -42,12 +42,16 @@ def savefig(fig, name: str, out_dir: Path = RESULTS_DIR) -> Path:
 def summary_distance_figure(
     distances: Dict[str, Dict[str, Sequence[float]]],
     out_dir: Path = RESULTS_DIR,
+    ceilings: Optional[Mapping[str, Tuple[float, float]]] = None,
 ) -> Path:
     """THE headline figure: distance-to-DMFC per rule, per metric, with seed spread.
 
     Args:
         distances: ``{metric: {rule: [per-seed distances]}}``, e.g.
             ``{"RSA": {"bptt": [...], "pc": [...]}, "iDSA": {...}}``.
+        ceilings: optional ``{metric: (lower, upper)}`` neural noise-ceiling band, in
+            the SAME distance units, drawn as a shaded span per metric panel (from
+            ``src.compare.rsa.noise_ceiling``). Omitted metrics get no band.
 
     Draws mean +/- spread over seeds per rule, grouped by metric. This reads saved
     metrics only. Reusable as-is; tracks feed it their per-seed distance arrays.
@@ -56,6 +60,9 @@ def summary_distance_figure(
     rules = sorted({r for m in distances.values() for r in m})
     fig, axes = plt.subplots(1, len(metrics), figsize=(5 * len(metrics), 4), squeeze=False)
     for ax, metric in zip(axes[0], metrics):
+        if ceilings and metric in ceilings:
+            lo, hi = ceilings[metric]
+            ax.axhspan(lo, hi, color="0.8", alpha=0.6, zorder=0, label="noise ceiling")
         for i, rule in enumerate(rules):
             vals = np.asarray(distances[metric].get(rule, []), dtype=float)
             if vals.size:
@@ -65,6 +72,8 @@ def summary_distance_figure(
         ax.set_xticklabels(rules)
         ax.set_title(f"{metric}: distance to DMFC")
         ax.set_ylabel("distance (per-seed spread)")
+        if ceilings and metric in ceilings:
+            ax.legend(fontsize=8)
     return savefig(fig, "summary_distance_to_dmfc", out_dir)
 
 

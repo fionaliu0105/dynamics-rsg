@@ -30,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import numpy as np
 
-from src.compare.rsa import rsa_distances_per_seed
+from src.compare.rsa import noise_ceiling, rsa_distances_per_seed
 from src.conditions import CONDITIONS
 from src.preprocess.pipeline import PreprocessConfig, Preprocessor
 from src.store import ActivationStore
@@ -56,6 +56,11 @@ def load_neural(path: Path) -> np.ndarray:
     return arr
 
 
+def _default_splits_path(neural_path: Path) -> Path:
+    """Sibling split-half tensor written by build_neural (dmfc_rsg.npy -> *_splits.npy)."""
+    return neural_path.with_name(neural_path.stem + "_splits.npy")
+
+
 def run(
     store_root: Path,
     seeds: List[int],
@@ -64,6 +69,7 @@ def run(
     out_dir: Path,
     k: int,
     n_time_bins: int,
+    splits_path: Optional[Path] = None,
 ) -> Dict[str, Dict[str, List[float]]]:
     store = ActivationStore(store_root)
     cfg = PreprocessConfig(k=k, n_time_bins=n_time_bins)
@@ -71,10 +77,21 @@ def run(
 
     # Fit the shared time base. Use the neural reference if present (so the model side
     # is warped onto the same base as the brain); otherwise fit on the first system.
+    ceilings = None
     if neural_path is not None:
         neural_raw = load_neural(neural_path)
         pre.fit(neural_raw)
         reference = pre.transform(neural_raw)
+        # Neural noise ceiling from the split-half tensors, through the SAME preprocessor
+        # so it lands in the same distance units as the model-to-DMFC bars.
+        splits_path = splits_path or _default_splits_path(neural_path)
+        if splits_path.exists():
+            raw_splits = np.load(splits_path, allow_pickle=True)
+            splits_pp = [pre.transform(s) for s in raw_splits]
+            lo, hi = noise_ceiling(splits_pp)
+            ceilings = {"RSA": (lo, hi)}
+        else:
+            print(f"[rsa] no split tensor at {splits_path}; skipping noise ceiling")
     else:
         first = stack_system(store, rules[0], seeds[0])
         pre.fit(first)
@@ -92,8 +109,9 @@ def run(
     distances = {"RSA": per_seed}
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    _atomic_json(out_dir / "rsa_distances.json", distances)
-    summary_distance_figure(distances, out_dir=out_dir / "figures")
+    payload = {"distances": distances, "noise_ceiling": ceilings}
+    _atomic_json(out_dir / "rsa_distances.json", payload)
+    summary_distance_figure(distances, out_dir=out_dir / "figures", ceilings=ceilings)
     return distances
 
 
@@ -112,6 +130,9 @@ def main(argv=None) -> int:
     p.add_argument("--seeds", nargs="+", type=int, required=True)
     p.add_argument("--neural", type=str, default=None,
                    help="path to DMFC tensor [cond,time,unit]; enables model-to-DMFC")
+    p.add_argument("--neural-splits", type=str, default=None,
+                   help="path to DMFC split-half tensor [S,cond,time,unit] for the "
+                        "noise ceiling (defaults to <neural>_splits.npy)")
     p.add_argument("--out-dir", type=str, default="results/rsa")
     p.add_argument("--k", type=int, default=10)
     p.add_argument("--n-time-bins", type=int, default=25)
@@ -125,6 +146,7 @@ def main(argv=None) -> int:
         out_dir=Path(args.out_dir),
         k=args.k,
         n_time_bins=args.n_time_bins,
+        splits_path=Path(args.neural_splits) if args.neural_splits else None,
     )
     mode = "model-to-DMFC" if args.neural else "rule-vs-rule"
     print(f"[rsa] {mode}: {json.dumps(distances)}")
