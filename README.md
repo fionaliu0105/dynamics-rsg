@@ -3,8 +3,8 @@
 **Do learning rules leave a measurable signature on latent geometry and dynamics
 in a Bayesian timing task?**
 
-We train one RNN architecture under two learning rules — backpropagation-through-time
-(BPTT) and predictive coding (PC) — on the two-prior Ready-Set-Go (RSG) interval-timing
+We train one RNN architecture under two learning rules, backpropagation-through-time
+(BPTT) and predictive coding (PC), on the two-prior Ready-Set-Go (RSG) interval-timing
 task, and ask whether the *rule* changes how closely a network's latent **geometry**
 (RSA) and **input-driven dynamics** (iDSA) resemble macaque DMFC. The architecture is
 held fixed across the two arms, so any difference is attributable to the learning rule
@@ -19,11 +19,11 @@ rather than the architecture.
 
 > **Read first:** [`AGENTS.md`](AGENTS.md) for the project's invariants (they are
 > load-bearing), and [`docs/implementation_plan.md`](docs/implementation_plan.md) for
-> the full build guide, the locked decisions, and the **team division of labor**.
+> the full build guide, the locked decisions, and the team division of labor.
 
 ## Status
 
-The **foundation is built and tested**; the domain modules are **stubs** with an
+The foundation is built and tested; the domain modules are stubs with an
 interface + "definition of done" + reference in each docstring, ready for the team to
 implement (see the division of labor in the plan). "Implemented" below means it runs
 and is covered by `tests/test_foundation.py`; "stub" means the contract is defined and
@@ -43,7 +43,7 @@ the body raises `NotImplementedError`.
 
 Foundation contracts are provided; each of the 5 members owns one module. Every stub
 below already exists with its interface, a "definition of done", and a reference in
-the docstring — implementing it means filling the `TODO(<track>)` seams. See
+the docstring. Implementing it means filling the `TODO(<track>)` seams. See
 [`docs/implementation_plan.md`](docs/implementation_plan.md) → "Team & division of
 labor" for the full table (learning goals, difficulty, plan-task numbers).
 
@@ -65,25 +65,25 @@ tested; the neural loader (`src/data/build_neural.py`) and the trainer loop
 
 ```
 src/
-  conditions.py       # ts x prior x effector schema — the SINGLE source of truth (20 conditions)
+  conditions.py       # ts x prior x effector schema: the single source of truth (20 conditions)
   task/               # two-prior RSG task (extends NeuroGym ReadySetGo-v0)
-  models/             # base interface + bptt_rnn + pc_rnn (share ONE forward())
+  models/             # base interface + bptt_rnn + pc_rnn (share one forward())
   training/           # config, rule-agnostic trainer (one seed per invocation)
-  behavior/           # tp-vs-ts slope — a REPORTED covariate, never a filter
+  behavior/           # tp-vs-ts slope: a reported covariate, never a filter
   data/               # DMFC_RSG (DANDI 000130) -> data/processed/ (isolated env)
   store/              # activation store keyed by (model, seed, condition): states + inputs + meta
   preprocess/         # identical normalization / PCA-to-shared-k / matched time bins
   compare/            # rsa.py (geometry) + idsa.py (input-driven dynamics)
   viz/                # figures read saved metrics; never retrain
 scripts/              # entry points (train.py); interactive == SLURM, one code path
-tests/                # test_foundation.py — contracts smoke tests (no torch needed)
+tests/                # test_foundation.py: contracts smoke tests (no torch needed)
 docs/                 # implementation_plan.md (build guide + team split)
 data/ results/        # inputs and outputs (processed tensors, checkpoints, figures)
 ```
 
 ## Environments
 
-There are **two** dependency sets, kept separate because the neural-ingestion stack
+There are two dependency sets, kept separate because the neural-ingestion stack
 (`dandi`/`pynwb`/`nlb_tools`) and the modeling/similarity stack (`torch`/`rsatoolbox`/DSA)
 pin conflicting `numpy`/`scipy` ranges. See `AGENTS.md` → "Dependency fragility".
 
@@ -105,18 +105,18 @@ conda create -n rsg-ingest python=3.10 -y && conda activate rsg-ingest
 pip install -r requirements-ingestion.txt
 ```
 
-Try a **single combined env first**; only split off the ingestion env if the combined
+Try a single combined env first; only split off the ingestion env if the combined
 install fails to resolve `numpy`/`scipy`. Either way, modeling code never imports
-`pynwb`/`dandi` — it reads the tensors in `data/processed/`.
+`pynwb`/`dandi`; it reads the tensors in `data/processed/`.
 
 > **Note on the store backend:** the activation store uses a numpy `.npz` backend, not
-> HDF5 — the shared anaconda `h5py` has a numpy-ABI break. Nothing extra to install; an
-> h5py/zarr backend can drop in later behind the same API.
+> HDF5, because the shared anaconda `h5py` has a numpy-ABI break. Nothing extra to
+> install; an h5py/zarr backend can drop in later behind the same API.
 
 ## Running things
 
 All commands are run from the repo root. The contracts and entry-point dry-run need
-**no** torch, so you can sanity-check them before the full install finishes.
+no torch, so you can sanity-check them before the full install finishes.
 
 ```bash
 # See the 20 conditions (prior x ts x effector), overlap at 800 ms marked:
@@ -139,13 +139,13 @@ python -m src.data.build_neural
 ### Regimes
 
 - `--regime reduced` (`dt=5, N=160`): CPU-friendly, for smoke tests / development. Will
-  under-train — expect flat behavior; that's expected, not a bug.
+  under-train, so expect flat behavior; that's expected, not a bug.
 - `--regime faithful` (`dt=1, N=200`): the paper-faithful setting for the real GPU runs.
 
 ### The seed sweep
 
-Model-to-brain similarity is sensitive to initialization, so **seeds are the unit of
-evidence** — always report the spread, never one network. The sweep is a
+Model-to-brain similarity is sensitive to initialization, so seeds are the unit of
+evidence: always report the spread, never one network. The sweep is a
 `(rule × pc_inference_steps × seed)` grid built by `sweep_configs()` in
 `src/training/config.py`, run as one seed per invocation (a SLURM array task and an
 interactive run are the same entry point). The expensive full sweeps run on the team's
@@ -154,7 +154,7 @@ account / wall-time are known.
 
 ## Key invariants (from `AGENTS.md`)
 
-These are non-negotiable — breaking one silently invalidates the comparison:
+These are non-negotiable; breaking one silently invalidates the comparison:
 
 - **One condition schema.** `src/conditions.py` is imported by both the task and the
   neural loader; conditions are never redefined locally.
@@ -170,11 +170,11 @@ These are non-negotiable — breaking one silently invalidates the comparison:
 ## References
 
 - Sohn, Narain, Meirhaeghe & Jazayeri (2019), *Bayesian computation through cortical
-  latent dynamics*, Neuron — https://doi.org/10.1016/j.neuron.2019.06.012
-- Neural data: DANDI 000130 — https://dandiarchive.org/dandiset/000130
-- Neural Latents Benchmark (`DMFC_RSG`) — https://neurallatents.github.io/datasets.html
-- NeuroGym — https://github.com/neurogym/neurogym
-- DSA / InputDSA — https://github.com/mitchellostrow/DSA
-- rsatoolbox — https://rsatoolbox.readthedocs.io/
-- Predictive coding — https://github.com/BerenMillidge/PredictiveCodingBackprop ·
+  latent dynamics*, Neuron. https://doi.org/10.1016/j.neuron.2019.06.012
+- Neural data: DANDI 000130. https://dandiarchive.org/dandiset/000130
+- Neural Latents Benchmark (`DMFC_RSG`). https://neurallatents.github.io/datasets.html
+- NeuroGym. https://github.com/neurogym/neurogym
+- DSA / InputDSA. https://github.com/mitchellostrow/DSA
+- rsatoolbox. https://rsatoolbox.readthedocs.io/
+- Predictive coding. https://github.com/BerenMillidge/PredictiveCodingBackprop ·
   https://github.com/Bogacz-Group/PredictiveCoding
