@@ -25,6 +25,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from src.task import active_backend
 from src.training.config import Config
 
 log = logging.getLogger(__name__)
@@ -41,6 +42,7 @@ def run_identity(cfg: Config) -> dict:
     return {
         "rule": cfg.rule,
         "seed": cfg.seed,
+        "task_source": active_backend(cfg),    # neurogym (default) or standalone
         "host": socket.gethostname(),
         "device": "cuda" if torch.cuda.is_available() else "cpu",
         "slurm_array_task_id": os.environ.get("SLURM_ARRAY_TASK_ID"),
@@ -64,7 +66,9 @@ def train_one_seed(cfg: Config, run_dir: Path) -> None:
 
     Skeleton (the loop body's rule step is the member tracks' job):
 
+        from src.task import make_batch, build_trial   # backend = cfg.task_source (neurogym default)
         set_seeds(cfg.seed)
+        rng = np.random.default_rng(cfg.seed)           # thread this into make_batch (deterministic)
         model, opt = build_model(cfg), Adam(...)
         resume_from_latest_checkpoint(run_dir, model, opt)      # TODO(me)
         for it in range(start_iter, cfg.n_iter):

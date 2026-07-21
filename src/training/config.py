@@ -45,8 +45,11 @@ class Config:
     g: float = 1.0                            # recurrent gain; J ~ N(0, g^2/N)
 
     # --- task input encoding ----------------------------------------------------
+    task_source: str = "neurogym"             # "neurogym" (default) | "standalone";
+                                              # backends are byte-identical (src/task/__init__.py)
     pulse_height: float = 0.4                 # Ready/Set pulse amplitude
-    pulse_width: float = 20.0                 # ms
+    pulse_width: float = 83.0                 # ms; = neurogym ReadySetGo ready/set
+                                              # period duration (both 83 ms)
     ready_onset: float = 100.0                # ms from trial start to Ready
     # total_time: raised 2600 -> 3000 on 2026-07-20. The old 2600 could not contain the
     # longest condition. A trial spans ready_onset + ts (Ready->Set) + ts (Set->Go, tp~=ts)
