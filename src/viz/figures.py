@@ -19,7 +19,7 @@ each track fills in its panel. Uses matplotlib (present) + numpy.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, Sequence
+from typing import Dict, Mapping, Sequence
 
 import matplotlib
 
@@ -66,3 +66,119 @@ def summary_distance_figure(
         ax.set_title(f"{metric}: distance to DMFC")
         ax.set_ylabel("distance (per-seed spread)")
     return savefig(fig, "summary_distance_to_dmfc", out_dir)
+
+
+def training_loss_figure(
+    losses: Sequence[float],
+    name: str = "training_loss",
+    out_dir: Path = RESULTS_DIR,
+) -> Path:
+    """Loss-vs-iteration curve for one seed's training run."""
+    fig, ax = plt.subplots(figsize=(5, 4))
+    ax.plot(np.arange(len(losses)), losses)
+    ax.set_xlabel("iteration")
+    ax.set_ylabel("masked MSE loss")
+    ax.set_title("training loss")
+    return savefig(fig, name, out_dir)
+
+
+def unit_activity_figure(
+    states: np.ndarray,
+    dt: float,
+    n_units: int = 8,
+    name: str = "unit_activity",
+    out_dir: Path = RESULTS_DIR,
+    title: str = "unit activity (r = tanh(x))",
+) -> Path:
+    """Time traces of a handful of units' activity for ONE condition.
+
+    Args:
+        states: ``[time, units]`` (or ``[trials, time, units]`` — first trial used).
+        dt: ms per step, to label the x-axis in ms.
+    """
+    states = np.asarray(states)
+    if states.ndim == 3:
+        states = states[0]
+    time_ms = np.arange(states.shape[0]) * dt
+    idx = np.linspace(0, states.shape[1] - 1, min(n_units, states.shape[1])).astype(int)
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+    for i in idx:
+        ax.plot(time_ms, states[:, i], lw=1)
+    ax.set_xlabel("time (ms)")
+    ax.set_ylabel("r")
+    ax.set_title(title)
+    return savefig(fig, name, out_dir)
+
+
+def output_vs_target_figure(
+    outputs: np.ndarray,
+    target: np.ndarray,
+    dt: float,
+    labels: Sequence[str],
+    threshold: float | None = None,
+    name: str = "output_vs_target",
+    out_dir: Path = RESULTS_DIR,
+) -> Path:
+    """Overlay produced output ``z_t`` against the ramp target, one line per trial."""
+    outputs = np.asarray(outputs)
+    target = np.asarray(target)
+    time_ms = np.arange(outputs.shape[1]) * dt
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+    colors = plt.cm.viridis(np.linspace(0, 1, outputs.shape[0]))
+    for i, label in enumerate(labels):
+        ax.plot(time_ms, outputs[i], color=colors[i], label=f"{label} (out)")
+        ax.plot(time_ms, target[i], color=colors[i], ls="--", alpha=0.5)
+    if threshold is not None:
+        ax.axhline(threshold, color="k", ls=":", lw=1, label="threshold")
+    ax.set_xlabel("time (ms)")
+    ax.set_ylabel("z")
+    ax.set_title("output (solid) vs. target ramp (dashed)")
+    ncol = 1 if len(labels) <= 8 else 2
+    ax.legend(fontsize=6, loc="upper left", ncol=ncol)
+    return savefig(fig, name, out_dir)
+
+
+def pca_trajectories_figure(
+    states_by_condition: Mapping[str, np.ndarray],
+    n_components: int = 2,
+    name: str = "pca_trajectories",
+    out_dir: Path = RESULTS_DIR,
+    color_by: Mapping[str, str] | None = None,
+    linestyle_by: Mapping[str, str] | None = None,
+) -> Path:
+    """PCA trajectories per condition — Fig 7C-style prior-support curvature panel.
+
+    Args:
+        states_by_condition: ``{condition_label: states [time, units]}``, already on
+            a shared time base. PCA is fit jointly (concatenated over conditions and
+            time) so all trajectories share one projection.
+        color_by: optional ``{condition_label: color}`` (e.g. by prior) — falls back
+            to a categorical colormap over conditions if omitted.
+
+    No sklearn dependency: PCA via numpy SVD on the mean-centered pooled activity.
+    """
+    labels = list(states_by_condition)
+    pooled = np.concatenate([np.asarray(states_by_condition[k]) for k in labels], axis=0)
+    mean = pooled.mean(axis=0, keepdims=True)
+    _, _, vt = np.linalg.svd(pooled - mean, full_matrices=False)
+    components = vt[:n_components]  # [n_components, units]
+
+    if color_by is None:
+        cmap = plt.cm.tab10(np.linspace(0, 1, max(len(labels), 1)))
+        color_by = {lab: cmap[i] for i, lab in enumerate(labels)}
+
+    fig, ax = plt.subplots(figsize=(5, 5))
+    for lab in labels:
+        traj = (np.asarray(states_by_condition[lab]) - mean) @ components.T  # [time, n_components]
+        ls = linestyle_by[lab] if linestyle_by else "-"
+        ax.plot(traj[:, 0], traj[:, 1], color=color_by[lab], ls=ls, label=lab, lw=1.5)
+        ax.scatter(*traj[0, :2], color=color_by[lab], marker="o", s=25)   # start
+        ax.scatter(*traj[-1, :2], color=color_by[lab], marker="s", s=25)  # end
+    ax.set_xlabel("PC1")
+    ax.set_ylabel("PC2")
+    ax.set_title("condition trajectories in PCA space (o=start, sq=end)")
+    ncol = 2 if len(labels) <= 10 else 3
+    ax.legend(fontsize=5, loc="best", ncol=ncol)
+    return savefig(fig, name, out_dir)

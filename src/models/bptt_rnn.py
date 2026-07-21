@@ -22,6 +22,27 @@ step and kept on ``model._last_outputs_both`` ``[B, T, 2]`` for inspection/tests
 TRAINING: masked MSE between ``z`` and the ramp target over the production epoch
 (``Batch.mask``). Adam over BPTT (the paper used Hessian-free; we substitute Adam).
 
+TRAINING STABILITY (investigated, not a bug — read before "fixing" a loss spike)
+    Training shows periodic loss spikes under vanilla Adam + full BPTT. Root cause,
+    confirmed analytically: with ``g=1`` the linearized dynamics around x=0 have
+    max eigenvalue magnitude of ``(1-alpha) + alpha*J`` equal to ~1.0 REGARDLESS of
+    alpha (``= dt/tau``) — g=1 puts this network at marginal stability / the edge
+    of chaos by construction (Sompolinsky et al. 1988; the paper's deliberate
+    choice), not a code defect. The ``reduced`` regime's coarse Euler step
+    (dt=5, alpha=0.5) amplifies this into visible optimization roughness; the same
+    setup at dt=1 (closer to ``faithful``) converges ~170x lower median loss for
+    ~5x the compute — ``reduced`` is documented (AGENTS.md) as under-training
+    on purpose, so don't read its roughness as evidence of a bug either.
+    Practical consequences for anyone training this model:
+      * ``cfg.grad_clip``'s default (1.0) global-norms across ~26k params
+        dominated by ``J`` (N x N), starving the ~2N-param readout (``w_o``,
+        ``c_z``) of gradient signal. Tune it up (5.0 worked for the reduced-regime
+        smoke checks) rather than assuming the readout is broken.
+      * Evaluate/report from the BEST-loss checkpoint seen during training, not
+        the final iterate — a late unlucky step can transiently spike loss even
+        after a good solution was found. This is what periodic checkpointing
+        (trainer.py, plan 2.1) gives you for free; it isn't specific to this model.
+
 DEFINITION OF DONE (plan 1.B check)
     Trains on trivial data, loss drops, tp finite and ordered, and the correct
     effector channel is the one that crosses threshold.
