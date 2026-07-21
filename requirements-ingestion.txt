@@ -4,12 +4,23 @@
 # src/data/build_neural.py and writes to data/processed/; modeling code then reads
 # those tensors and never imports pynwb/dandi. See AGENTS.md ("Dependency fragility").
 #
-# Try a single combined env FIRST (requirements.txt + these). Only split into this
-# separate env if the combined install fails to resolve numpy/scipy.
+# RESOLVED 2026-07-21 (plan 1.D). A single combined env is NOT possible: nlb_tools
+# 0.0.4 caps pandas<=1.3.4, which has no py3.11 wheel and fails to build from source,
+# and that cap also fights pynwb 4.0 (pandas>=1.4). The working recipe (conda env
+# `rsg-ingest`, python 3.11):
+#
+#   pip install "numpy<2" "pandas>=1.4,<2" pynwb dandi pyyaml scikit-learn
+#   pip install --no-deps nlb_tools     # bypass its stale pandas<=1.3.4 cap
+#
+# Verified runtime: numpy 1.26.4, pandas 1.5.3, pynwb 4.0.0, dandi 0.76.7 all import
+# and NWBDataset loads; nlb_tools tolerates the newer numpy/pandas at runtime. pyyaml
+# is required because build_neural imports the (torch-free) src.training.config.Config
+# for the model's input-channel constants.
 
-numpy
-scipy
-pandas
-dandi
-pynwb
-nlb_tools           # DMFC_RSG loader: trial-aligned binned rates + behavioral tp
+numpy<2
+pandas>=1.4,<2
+pynwb                 # 4.0.0 verified
+dandi                 # 0.76.7 verified
+pyyaml                # src.training.config.Config needs it (channel encodings)
+scikit-learn          # nlb_tools runtime dep (installed with --no-deps)
+nlb_tools             # install with --no-deps; DMFC_RSG loader (binned rates + tp)
