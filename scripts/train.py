@@ -53,6 +53,12 @@ def main(argv=None) -> int:
     p.add_argument("--task-source", choices=["neurogym", "standalone"],
                    help="task data generator (default from config: neurogym)")
     p.add_argument("--run-dir", type=str, default="results/runs")
+    p.add_argument(
+        "--activation-store",
+        type=str,
+        default=None,
+        help="shared ActivationStore root (default: sibling 'activations' of --run-dir)",
+    )
     p.add_argument("--dry-run", action="store_true", help="build+print config, don't train")
     args = p.parse_args(argv)
 
@@ -65,7 +71,12 @@ def main(argv=None) -> int:
         return 0
 
     from src.training.trainer import train_one_seed  # lazy: needs torch
-    train_one_seed(cfg, run_dir)
+    activation_store = (
+        Path(args.activation_store)
+        if args.activation_store
+        else Path(args.run_dir).parent / "activations"
+    )
+    train_one_seed(cfg, run_dir, activation_store_root=activation_store)
     return 0
 
 

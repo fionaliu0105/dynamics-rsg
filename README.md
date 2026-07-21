@@ -36,8 +36,8 @@ the body raises `NotImplementedError`.
 | Activation store | `src/store/` | implemented (`.npz` backend) |
 | Model interface | `src/models/base.py` | implemented |
 | Plotting harness | `src/viz/figures.py` | harness implemented; panels stubbed |
-| Training entry point | `scripts/train.py` | implemented (`--dry-run`); loop stubbed |
-| Task, BPTT, PC, preprocess, RSA, iDSA, behavior, neural loader, trainer loop | `src/task`, `src/models`, `src/preprocess`, `src/compare`, `src/behavior`, `src/data`, `src/training/trainer.py` | stubs |
+| Training entry point | `scripts/train.py` | implemented (BPTT + PC, checkpoint/resume, activation export) |
+| Task, BPTT, PC, preprocess, RSA, iDSA, behavior, neural loader, trainer loop | `src/task`, `src/models`, `src/preprocess`, `src/compare`, `src/behavior`, `src/data`, `src/training/trainer.py` | implemented |
 
 ## Division of labor (who implements which files)
 
@@ -58,8 +58,9 @@ labor" for the full table (learning goals, difficulty, plan-task numbers).
 Provided by the foundation (agent-owned): the contracts (`src/conditions.py`,
 `src/training/config.py`, `src/store/`, `src/models/base.py`), the viz harness
 (`src/viz/figures.py`), and the entry point (`scripts/train.py`) are implemented and
-tested; the neural loader (`src/data/build_neural.py`) and the trainer loop
-(`src/training/trainer.py`) are agent-owned scaffolds still being filled in.
+tested; the neural loader (`src/data/build_neural.py`) and the shared trainer
+(`src/training/trainer.py`) are implemented, including restart-safe checkpoints,
+per-seed metrics, and aligned condition activation export.
 
 ## Repository layout
 
@@ -128,7 +129,7 @@ python tests/test_foundation.py          # or: pytest tests/
 # Build a run config and print the plan WITHOUT training (no torch needed):
 python scripts/train.py --regime reduced --rule pc --seed 3 --dry-run
 
-# Train one seed (needs the main env with torch; loop is a stub until 1.B/1.C land):
+# Train one seed (needs the main environment with torch + NeuroGym):
 python scripts/train.py --regime reduced --rule bptt --seed 0
 python scripts/train.py --config configs/pc.yaml --seed 0
 
