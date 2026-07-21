@@ -117,23 +117,28 @@ rule-vs-rule check (JSON only).
 
 ## Gaps & coordination (read before the first real run)
 
-1. **Trainer (blocker, teammate-owned).** `src/training/trainer.py::train_one_seed` is
-   still a `NotImplementedError` stub. Everything downstream is ready and waits on it.
-2. **Store-path seam — confirm this.** Stages 2–3 read `--store results/activations`,
-   with records keyed by `model=<rule>` and a real `Condition`
-   (see `tests/test_bptt_integration.py`). `scripts/train.py` only has `--run-dir`
-   (checkpoints) and passes **no store path** to the trainer. The trainer must write
-   the `ActivationStore` at **`results/activations`** (or `train.py` needs a `--store`
-   flag threaded through, with the comparison scripts pointed at the same path). If
-   this is off, Stages 2–3 find no records.
-3. **Behavior Fig 1E** has no runner yet — `src/behavior/slope.py` +
-   `viz.behavior_slope_figure` exist, but nothing reads the store's `tp` to plot the
-   tp-vs-ts slope. Behavior is a *reported covariate*, not a filter and not needed for
-   the RSA/iDSA result — carry it alongside, never gate seeds on it (AGENTS.md).
-4. **Official DSA backend** (optional) lives in its own env (`requirements-idsa.txt`);
-   `--backend builtin` is fine for a first full run.
+1. **PC training is numerically unstable in the reduced regime — the current blocker
+   for a PC-vs-BPTT run.** As of the smoke below, PC (`src/models/pc_rnn.py`
+   `infer_and_update`) diverges to non-finite within ~7–10 iterations across seeds;
+   lowering `pc_inference_lr` (0.1→0.02) or `lr` (1e-3→2e-4) doesn't fix it (points at
+   the local-update direction/scale, not a hyperparameter). **BPTT trains and runs the
+   full pipeline end to end.** Owned by the PC track. Note the trainer's PC test only
+   covers a 1-iteration `N=8` config, so it does not catch this.
+2. **Behavior Fig 1E** — the trainer now computes tp-vs-ts slopes and per-condition
+   `tp` into each seed's `metrics.json` (`behavior_slopes`, `behavior_by_condition`),
+   so the *data* exists; only a figure runner over the store is still missing. Behavior
+   is a *reported covariate* — carry it alongside, never gate seeds on it (AGENTS.md).
+3. **Official DSA backend** (optional) lives in its own env (`requirements-idsa.txt`);
+   it is installed in `rsg` and agrees with `--backend builtin` (see
+   `tests/test_idsa_backends.py`), so either backend is fine.
 
-## Smoke checklist (fastest path once the trainer lands)
+*Resolved:* the trainer (`train_one_seed`) is implemented and restart-safe
+(commit `04b1440`), and the store-path seam is closed — `scripts/train.py` defaults the
+activation store to `results/activations` (`--run-dir`'s sibling), exactly what Stages
+2–3 read. Verified end to end for BPTT: sweep → 20-condition store → RSA + iDSA
+model-to-DMFC → JSON + figures.
+
+## Smoke checklist (fastest end-to-end path)
 
 ```bash
 conda activate rsg
