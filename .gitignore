@@ -18,9 +18,11 @@ results/**/*.ckpt
 
 # Regenerable run artifacts. Stage 0 rebuilds data/; Stage 1-3 rebuild results/.
 # results/figures/ is deliberately NOT ignored — curated figures are committed.
+# Wildcard (not just "results/runs/") so ad hoc validation dirs like results/runs_v2/
+# are covered too, without needing a .gitignore edit every time one is created.
 data/raw/
 data/processed/
-results/runs/
+results/runs*/
 results/activations/
 results/rsa/
 results/idsa/

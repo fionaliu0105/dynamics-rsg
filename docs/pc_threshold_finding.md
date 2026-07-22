@@ -1,5 +1,16 @@
 # PC model: it trains fine, but never "presses go" — needs the team's eyes
 
+> **Status (2026-07-21, later that day): partially superseded.** This note describes
+> the state *before* merging `pranavpata`'s `pc_rnn_2` fix (normalize+clip, plus
+> routing PC through the same Adam optimizer as BPTT — the update-scale/`J`-frozen
+> problem described below). A fresh validation run against the merged fix is in
+> progress; see `.suplex/docs/discrepancy_log.md` for the live status. Separately,
+> `docs/RUNBOOK.md` ("Gaps" #2) documents a second, likely-contributing issue: the
+> task's target ramp caps *exactly* at `cfg.threshold` rather than above it, which
+> makes threshold-crossing noise-decided regardless of the learning rule. Read this
+> note as historical context for the images below (archived under
+> `results/figures/pc_activity_pre_merge_2026-07-21/`), not the current state.
+
 **TL;DR:** The predictive-coding (PC) network trains cleanly on the real RSG task now (a bug that used to blow it up is fixed). But when we check whether it actually produces a timed response, it never crosses the response threshold, on any of the 20 task conditions. We don't yet know why, and it's a good problem to look at together.
 
 ## What we were checking
@@ -34,7 +45,8 @@ Worth someone digging into whether the output weights are still growing at all b
 
 ## Where to look
 
-- The plot that shows this most clearly: `results/figures/pc_activity/pc_output_vs_target.png` (solid = model output, dashed = target, dotted = threshold).
-- Full numbers: `results/runs/pc/seed_0000/metrics.json`.
-- The tutorial notebook walking through all of this end to end: `notebooks/pc_tutorial.ipynb`.
-- The fix in question: `src/models/pc_rnn.py`, function `infer_and_update` (look for `_clip_updates`).
+- The plot that shows this most clearly (archived, pre-merge): `results/figures/pc_activity_pre_merge_2026-07-21/pc_output_vs_target.png` (solid = model output, dashed = target, dotted = threshold).
+- Full numbers (pre-merge run): `results/runs/pc/seed_0000/metrics.json`.
+- The tutorial notebook walking through all of this end to end: `notebooks/pc_tutorial.ipynb` (now repointed at the post-merge validation run, `results/runs_v2/pc/seed_0000/`).
+- The fix in question at the time this note was written: `src/models/pc_rnn.py`'s `_clip_updates`/normalization (since superseded by `pc_rnn_2`'s `_rescale_updates` + Adam-routing in `src/training/trainer.py`).
+- The likely-contributing task-definition issue: `docs/RUNBOOK.md`, "Gaps" #2 (`cfg.ramp_A` unused, target caps exactly at threshold).
