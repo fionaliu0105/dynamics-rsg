@@ -85,6 +85,18 @@ class Config:
     # ~1e4 smaller than its readout update and J stays effectively frozen. This is a
     # scientific choice, so it is a config knob rather than a constant.
     pc_optimizer: str = "adam"                # "adam" | "sgd"
+    # How the local update is clipped before being applied/handed to the optimizer.
+    # "global_norm" (current default) scales the WHOLE joint update vector down to
+    # norm <= cfg.grad_clip if it exceeds that -- J alone has ~25.6k elements sharing
+    # that one budget with everything else, a much tighter squeeze per-element than
+    # the reference. Millidge's rnn.py clamps EACH element of dWh/dWy independently to
+    # [-clamp_val, clamp_val] (clamp_val=50) -- no cross-parameter competition for a
+    # shared budget. "elementwise" reproduces that, reusing cfg.grad_clip as the
+    # per-element bound (on normalized, mean-scale updates, so 1.0 is the natural
+    # analogue of Millidge's 50 on his raw, unnormalized ones -- not the same number,
+    # the same role). Untested hypothesis: this alone, even under "sgd", may be
+    # enough to unfreeze J without needing pc_optimizer="adam" at all.
+    pc_clip_mode: str = "global_norm"         # "global_norm" | "elementwise"
 
     # --- sweep bookkeeping ------------------------------------------------------
     n_seeds: int = 10                         # default seeds per (rule x sweep-point)

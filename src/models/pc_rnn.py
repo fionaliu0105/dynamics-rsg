@@ -309,8 +309,15 @@ class PCRNN(nn.Module, Model):
            Dividing the whole energy by ``mask.sum()`` is a scalar rescale of the
            objective, so it changes step size without touching update direction.
         2. **Clip.** ``cfg.grad_clip`` is applied to the BPTT arm but was never applied
-           here.  Millidge clamps elementwise (``clamp_val=50``); we use a global-norm
-           clip so the two arms share one clipping semantics.
+           here.  ``cfg.pc_clip_mode`` selects how: ``"global_norm"`` scales the whole
+           joint update vector down to norm <= ``cfg.grad_clip`` if it exceeds that --
+           every parameter shares one budget, so ``J`` (~25.6k elements) competes with
+           ``w_o`` for the same pool. ``"elementwise"`` instead clamps each element of
+           each update tensor independently to ``[-cfg.grad_clip, cfg.grad_clip]``,
+           matching Millidge's ``rnn.py`` (``torch.clamp(dW, -clamp_val, clamp_val)``,
+           ``clamp_val=50`` there on raw unnormalized updates -- ``cfg.grad_clip`` here
+           plays the same role on normalized ones, not the same number). No
+           cross-parameter competition for a shared budget under this mode.
 
         Both keep architecture *and* optimizer handling parity, so a PC-vs-BPTT
         difference remains attributable to the learning rule.
@@ -319,10 +326,15 @@ class PCRNN(nn.Module, Model):
         updates = {name: value / scale for name, value in updates.items()}
 
         clip = float(self.cfg.grad_clip)
-        if clip > 0:
-            total = torch.sqrt(sum(value.square().sum() for value in updates.values()))
-            if bool(torch.isfinite(total)) and float(total) > clip:
-                updates = {name: value * (clip / (total + 1e-12)) for name, value in updates.items()}
+        if clip <= 0:
+            return updates
+        if self.cfg.pc_clip_mode == "elementwise":
+            return {name: torch.clamp(value, -clip, clip) for name, value in updates.items()}
+        if self.cfg.pc_clip_mode != "global_norm":
+            raise ValueError(f"unknown pc_clip_mode {self.cfg.pc_clip_mode!r}")
+        total = torch.sqrt(sum(value.square().sum() for value in updates.values()))
+        if bool(torch.isfinite(total)) and float(total) > clip:
+            updates = {name: value * (clip / (total + 1e-12)) for name, value in updates.items()}
         return updates
 
     @staticmethod

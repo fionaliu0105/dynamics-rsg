@@ -126,3 +126,42 @@ def test_updates_are_normalized_and_recurrent_weights_train():
     assert losses[-1] < losses[0] * 0.7, (losses[0], losses[-1])
     moved = (model.J.detach() - initial_J).norm() / initial_J.norm()
     assert moved > 1e-3, f"recurrent weights effectively frozen: relative move {moved:.2e}"
+
+
+def test_elementwise_clip_does_not_unfreeze_recurrent_weights_under_plain_sgd():
+    """Documents a tested-and-rejected hypothesis: the clip TYPE is not the bottleneck.
+
+    Millidge's reference ``rnn.py`` clamps each update element independently to
+    ``[-clamp_val, clamp_val]`` rather than scaling the whole joint vector to a shared
+    global norm (``cfg.pc_clip_mode="global_norm"``, the default). Reproducing that
+    (``pc_clip_mode="elementwise"``) with plain SGD (``pc_optimizer="sgd"``, no
+    external optimizer) was checked as an alternative to routing PC through Adam, on
+    the theory that the global-norm clip's cross-parameter budget-sharing (J alone has
+    ~25.6k elements competing with w_o for one pool) might be what starves J, not
+    something inherent to PC's local rule.
+
+    Measured: it isn't. Relative J movement is ~1e-5 under either clip mode -- clipping
+    only caps values that are already large, and J's normalized gradient here is
+    naturally tiny to begin with, so no clip variant amplifies it. This test guards
+    against re-litigating that hypothesis without re-deriving it: if this ever starts
+    passing (J moving meaningfully), that's a real change in the update math worth
+    investigating, not a fluke to shrug off.
+    """
+    cfg, inputs, target, mask = _toy_batch()
+    cfg.pc_optimizer = "sgd"
+    cfg.pc_clip_mode = "elementwise"
+    torch.manual_seed(0)
+    model = PCRNN(cfg)
+    initial_J = model.J.detach().clone()
+    losses = []
+    for _ in range(40):
+        result = model.infer_and_update(inputs, target, mask, apply_update=True)
+        losses.append(result["loss"])
+
+    assert all(torch.isfinite(torch.tensor(losses))), "PC training went non-finite"
+    moved = (model.J.detach() - initial_J).norm() / initial_J.norm()
+    assert moved < 1e-3, (
+        f"recurrent weights moved more than expected under elementwise-clip plain SGD "
+        f"({moved:.2e}) -- the 'clip type is the bottleneck' hypothesis may no longer "
+        f"be rejected; re-investigate rather than assuming Adam is still necessary."
+    )
