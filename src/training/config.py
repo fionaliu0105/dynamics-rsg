@@ -68,7 +68,13 @@ class Config:
     w_m: float = 0.05                         # Weber fraction of scalar meas. noise
     threshold: float = 1.0                    # Go threshold (Methods z=1; net 0.99)
     ramp_a: float = 2.8                       # ramp shape (paper 2.8; saved 3.3)
-    ramp_A: float = 3.0                       # ramp amplitude (paper 3; saved 2.85)
+    # Hold-segment ceiling in src/task/rsg.py::ramp() (2026-07-21/22 reconciliation of
+    # this previously-unused constant; see docs/RUNBOOK.md Gaps #2). The literal
+    # paper/saved-net value (~3.0/2.85) was tried first and was too big a jump in
+    # target dynamic range for the current training budget -- even BPTT failed to
+    # converge under it (n_iter=3000, loss 1.28->0.69). 1.2x threshold matches the
+    # margin team notes independently describe as already tested and working.
+    ramp_A: float = 1.2                       # hold ceiling (was 3.0; paper 3/saved 2.85)
 
     # --- optimisation -----------------------------------------------------------
     lr: float = 1e-3
@@ -79,6 +85,24 @@ class Config:
     # --- predictive coding (ignored when rule == "bptt") ------------------------
     pc_inference_steps: int = 20              # value-relaxation steps; SWEEP THIS
     pc_inference_lr: float = 0.1              # latent-state update rate
+    # How PC's local updates become a step. "adam" matches the BPTT arm, so a
+    # PC-vs-BPTT difference is attributable to the rule rather than to the optimizer;
+    # "sgd" is the pure local rule Millidge runs, under which PC's recurrent update is
+    # ~1e4 smaller than its readout update and J stays effectively frozen. This is a
+    # scientific choice, so it is a config knob rather than a constant.
+    pc_optimizer: str = "adam"                # "adam" | "sgd"
+    # How the local update is clipped before being applied/handed to the optimizer.
+    # "global_norm" (current default) scales the WHOLE joint update vector down to
+    # norm <= cfg.grad_clip if it exceeds that -- J alone has ~25.6k elements sharing
+    # that one budget with everything else, a much tighter squeeze per-element than
+    # the reference. Millidge's rnn.py clamps EACH element of dWh/dWy independently to
+    # [-clamp_val, clamp_val] (clamp_val=50) -- no cross-parameter competition for a
+    # shared budget. "elementwise" reproduces that, reusing cfg.grad_clip as the
+    # per-element bound (on normalized, mean-scale updates, so 1.0 is the natural
+    # analogue of Millidge's 50 on his raw, unnormalized ones -- not the same number,
+    # the same role). Untested hypothesis: this alone, even under "sgd", may be
+    # enough to unfreeze J without needing pc_optimizer="adam" at all.
+    pc_clip_mode: str = "global_norm"         # "global_norm" | "elementwise"
 
     # --- sweep bookkeeping ------------------------------------------------------
     n_seeds: int = 10                         # default seeds per (rule x sweep-point)

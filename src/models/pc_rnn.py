@@ -173,6 +173,47 @@ class PCRNN(nn.Module, Model):
         values = self._effector_values.to(device=inputs.device, dtype=inputs.dtype)
         return torch.argmin((inputs[:, 0, 2:3] - values.unsqueeze(0)).abs(), dim=-1)
 
+    def _relax(self, values, inputs, target, mask):
+        """Relax value nodes by gradient descent on the PC energy, all timesteps at once.
+
+        Millidge's ``PC_RNN.infer`` visits timesteps in reverse order (Gauss-Seidel) so
+        that readout error propagates backward across the sequence.  That ordering is
+        **not** needed here, and we deliberately do not copy it: his char-prediction
+        setup scores only the sequence end, whereas RSG supervises the whole production
+        epoch, so every value node already receives direct output-error pressure and
+        there is no long-range credit to assign.  Measured on the reduced regime the two
+        schemes are equivalent in both update direction (cosine to the BPTT gradient
+        0.71 vs 0.72) and outcome after 100 iterations (``|dJ|`` 2.90 vs 2.83, loss 0.067
+        vs 0.066), while the reverse sweep costs 4.7x more wall-clock because it is a
+        Python loop over ``T`` steps.  Keep the vectorized form.
+
+        Backtracking halves the step until energy is non-increasing, which is what makes
+        the returned trace a usable PC-A energy-descent diagnostic.  ``values[:, 0]`` is
+        held at the ``x0`` parameter -- it is the model's initial-value node, not a free
+        latent.
+
+        Returns ``(values, energy, temporal_error, output_error, r, output, trace)``.
+        """
+        energy, temporal_error, output_error, r, output = self._energy_and_errors(
+            values, inputs, target, mask
+        )
+        trace = [float(energy.item())]
+        for _ in range(self.cfg.pc_inference_steps):
+            grad = self._value_gradient(values, inputs, temporal_error, output_error, mask)
+            step = self.cfg.pc_inference_lr
+            while True:
+                candidate = values - step * grad
+                candidate[:, 0] = self.x0.detach().to(candidate.dtype)
+                cand = self._energy_and_errors(candidate, inputs, target, mask)
+                candidate_energy = cand[0]
+                if candidate_energy <= energy + 1e-7 or step < 1e-8:
+                    values, energy = candidate, candidate_energy
+                    _, temporal_error, output_error, r, output = cand
+                    break
+                step *= 0.5
+            trace.append(float(energy.item()))
+        return values, energy, temporal_error, output_error, r, output, trace
+
     def _energy_and_errors(self, values, inputs, target, mask):
         """Return PC energy and prediction errors for the current value nodes.
 
@@ -255,11 +296,58 @@ class PCRNN(nn.Module, Model):
                 updates["c_z"][group] = err.sum()
         return updates
 
+    def _rescale_updates(self, updates, mask):
+        """Put PC updates on the same footing as the BPTT arm's gradients.
+
+        Two corrections, both matching what ``training/trainer.py`` already does for
+        BPTT and neither of which the raw local rule supplies:
+
+        1. **Normalize.** ``_local_updates`` accumulates raw *sums* over batch and
+           time, while the BPTT loss is a masked *mean* (``masked_mse`` divides by
+           ``mask.sum()``).  Left unnormalized the two arms differ by ~1e4 at the same
+           ``cfg.lr``, which is what drove the old divergence at iteration ~9.
+           Dividing the whole energy by ``mask.sum()`` is a scalar rescale of the
+           objective, so it changes step size without touching update direction.
+        2. **Clip.** ``cfg.grad_clip`` is applied to the BPTT arm but was never applied
+           here.  ``cfg.pc_clip_mode`` selects how: ``"global_norm"`` scales the whole
+           joint update vector down to norm <= ``cfg.grad_clip`` if it exceeds that --
+           every parameter shares one budget, so ``J`` (~25.6k elements) competes with
+           ``w_o`` for the same pool. ``"elementwise"`` instead clamps each element of
+           each update tensor independently to ``[-cfg.grad_clip, cfg.grad_clip]``,
+           matching Millidge's ``rnn.py`` (``torch.clamp(dW, -clamp_val, clamp_val)``,
+           ``clamp_val=50`` there on raw unnormalized updates -- ``cfg.grad_clip`` here
+           plays the same role on normalized ones, not the same number). No
+           cross-parameter competition for a shared budget under this mode.
+
+        Both keep architecture *and* optimizer handling parity, so a PC-vs-BPTT
+        difference remains attributable to the learning rule.
+        """
+        scale = float(mask.sum().clamp_min(1.0).item())
+        updates = {name: value / scale for name, value in updates.items()}
+
+        clip = float(self.cfg.grad_clip)
+        if clip <= 0:
+            return updates
+        if self.cfg.pc_clip_mode == "elementwise":
+            return {name: torch.clamp(value, -clip, clip) for name, value in updates.items()}
+        if self.cfg.pc_clip_mode != "global_norm":
+            raise ValueError(f"unknown pc_clip_mode {self.cfg.pc_clip_mode!r}")
+        total = torch.sqrt(sum(value.square().sum() for value in updates.values()))
+        if bool(torch.isfinite(total)) and float(total) > clip:
+            updates = {name: value * (clip / (total + 1e-12)) for name, value in updates.items()}
+        return updates
+
     @staticmethod
     def _metrics(pc_update: torch.Tensor, bptt_grad: torch.Tensor) -> Dict[str, float]:
-        """Summarize one PC update against one autograd descent direction."""
-        # PC updates descend energy, exactly like negative BPTT gradients.
-        reference = -bptt_grad
+        """Summarize one PC update against the matching autograd gradient.
+
+        ``updates`` are *gradients*, not descent directions: ``infer_and_update``
+        applies them as ``parameter.add_(-lr * update)``.  The reference is therefore
+        ``+bptt_grad``, so a correct port scores ``cosine -> +1``.  This previously
+        negated the reference, which reported an exactly-correct readout update as
+        ``cosine = -1.000`` and made the PC-A alignment observable read backwards.
+        """
+        reference = bptt_grad
         denom = pc_update.norm() * reference.norm()
         cosine = float((pc_update.flatten() @ reference.flatten() / denom).item()) if denom > 0 else float("nan")
         relative_error = float((pc_update - reference).norm().div(reference.norm().clamp_min(1e-12)).item())
@@ -279,16 +367,22 @@ class PCRNN(nn.Module, Model):
         4. Define energy as ``0.5 * (sum(temporal_error**2) +
            sum(masked_output_error**2))``.
         5. Relax values for ``cfg.pc_inference_steps`` using the local value
-           gradient.  Backtracking halves the inference step size until energy is
-           non-increasing, preserving a deterministic energy-descent diagnostic.
+           gradient (see ``_relax``).  Backtracking halves the inference step size
+           until energy is non-increasing, preserving a deterministic energy-descent
+           diagnostic.
         6. Compute local updates for ``J``, ``B``, ``c_x``, ``x0``, ``w_o``, and
-           ``c_z``.  If ``apply_update`` is true, subtract ``cfg.lr * update``
-           from each parameter.
+           ``c_z``, rescale them onto the BPTT arm's footing (``_rescale_updates``),
+           and, if ``apply_update`` is true, subtract ``cfg.lr * update`` from each
+           parameter.
+
+        Note that ``updates`` are *gradients*: they are applied as
+        ``parameter.add_(-lr * update)``, and ``_metrics`` scores them against
+        ``+bptt_grad``.
 
         Returns a diagnostic dictionary with:
 
         * ``energy_trace``: scalar energy before inference and after each
-          relaxation step.
+          relaxation sweep.
         * ``loss``: masked output MSE-style loss on the final inferred values.
         * ``updates``: detached update tensors keyed by parameter name.
         * ``values``: detached final raw inferred values ``[batch, time, units]``.
@@ -302,24 +396,12 @@ class PCRNN(nn.Module, Model):
 
         with torch.no_grad():
             values = self._raw_forward_values(inputs)
-            energy, temporal_error, output_error, r, output = self._energy_and_errors(values, inputs, target, mask)
-            trace = [float(energy.item())]
-            for _ in range(self.cfg.pc_inference_steps):
-                grad = self._value_gradient(values, inputs, temporal_error, output_error, mask)
-                step = self.cfg.pc_inference_lr
-                # Clamp x[0] to its parameter: it is the model's initial-value node.
-                while True:
-                    candidate = values - step * grad
-                    candidate[:, 0] = self.x0.detach().to(candidate.dtype)
-                    candidate_energy, candidate_temporal, candidate_output, candidate_r, candidate_y = self._energy_and_errors(candidate, inputs, target, mask)
-                    if candidate_energy <= energy + 1e-7 or step < 1e-8:
-                        values, energy = candidate, candidate_energy
-                        temporal_error, output_error, r, output = candidate_temporal, candidate_output, candidate_r, candidate_y
-                        break
-                    step *= 0.5
-                trace.append(float(energy.item()))
+            values, energy, temporal_error, output_error, r, output, trace = self._relax(
+                values, inputs, target, mask
+            )
 
             updates = self._local_updates(values, inputs, temporal_error, output_error, r)
+            updates = self._rescale_updates(updates, mask)
             parameters = {"J": self.J, "B": self.B, "c_x": self.c_x, "x0": self.x0, "w_o": self.w_o, "c_z": self.c_z}
             finite = {name: bool(torch.isfinite(value).all()) for name, value in updates.items()}
             if not all(finite.values()) or not torch.isfinite(values).all() or not torch.isfinite(energy):

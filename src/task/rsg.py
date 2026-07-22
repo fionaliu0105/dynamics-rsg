@@ -67,18 +67,48 @@ class Batch:
 def ramp(t_rel_steps, ts_steps: int, cfg: Config) -> np.ndarray:
     """Target ramp value(s) at ``t_rel_steps`` steps after Set.
 
-    Monotone, **crossing ``cfg.threshold`` at exactly ``t_rel_steps == ts_steps``**, then
-    holding ``cfg.threshold`` (``np.clip(.., 0, 1)`` caps the fraction at 1, so the hold
-    falls out of the same formula). Crossing-at-``ts`` fixes the tp-vs-ts baseline slope
-    at 1 so the measured Bayesian bias is not confounded by ramp geometry.
+    Two segments:
 
-    TODO(task-track): the exact Eq.9 form and the role of ``cfg.ramp_A`` are UNVERIFIED
-    (PLAN_TRACK1.md open item). This uses the "reaches threshold at ts" interpretation
-    with shape exponent ``cfg.ramp_a``; ``ramp_A`` is intentionally unused until
-    reconciled against the reconstruction.
+    * **Approach** (``0 <= t_rel_steps <= ts_steps``): monotone power-law rise,
+      **crossing ``cfg.threshold`` at exactly ``t_rel_steps == ts_steps``**. This
+      calibration is load-bearing and unchanged from before — it fixes the
+      tp-vs-ts baseline slope at 1, so the measured Bayesian bias is not
+      confounded by ramp geometry.
+    * **Hold** (``t_rel_steps > ts_steps``, up to ``cfg.prod_hold_step`` further):
+      rises further, linearly, from ``cfg.threshold`` up to ``cfg.ramp_A`` by the
+      end of the hold window, then stays at ``cfg.ramp_A``.
+
+    Reconciles ``docs/RUNBOOK.md`` Gap #2: previously the hold plateaued at
+    exactly ``cfg.threshold``, so whether a well-trained network's output
+    technically "crossed" threshold was decided by noise at the margin
+    (confirmed directly: a converged BPTT run's peak output landed at
+    0.993-0.996 for 15/20 conditions — a near-perfect match to the old target,
+    just under threshold). Holding at ``cfg.ramp_A`` instead gives real margin
+    above threshold, without touching the approach segment's crossing-at-ts
+    calibration.
+
+    ``cfg.ramp_A`` default is ``1.2`` (1.2x threshold) — **not** the
+    reconstruction's literal quoted ramp amplitude (~3.0/2.85, itself one of the
+    "UNVALIDATED reconstruction constants" per AGENTS.md). That literal value was
+    tried first (2026-07-21 night) and was too big a jump in target dynamic range
+    for the current training budget: BPTT, which otherwise tracks this task well,
+    failed to converge at all under it (n_iter=3000, loss 1.28->0.69 instead of
+    ->0.004). 1.2x matches the margin separately described in team notes as
+    already tested and working.
+
+    This is one defensible reconciliation of ``cfg.ramp_A`` (linear hold rise),
+    not a verified match to the original paper's Eq. 9 — flag it as such if a
+    closer reading of the reconstruction surfaces a different intended shape.
     """
-    frac = np.clip(np.asarray(t_rel_steps, dtype=float) / float(ts_steps), 0.0, 1.0)
-    return (cfg.threshold * frac ** cfg.ramp_a).astype(np.float32)
+    t_rel_steps = np.asarray(t_rel_steps, dtype=float)
+    approach_frac = np.clip(t_rel_steps / float(ts_steps), 0.0, 1.0)
+    approach = cfg.threshold * approach_frac ** cfg.ramp_a
+
+    hold_frac = np.clip((t_rel_steps - ts_steps) / max(cfg.prod_hold_step, 1), 0.0, 1.0)
+    hold = cfg.threshold + (cfg.ramp_A - cfg.threshold) * hold_frac
+
+    value = np.where(t_rel_steps <= ts_steps, approach, hold)
+    return value.astype(np.float32)
 
 
 def _measurement_steps(cfg: Config, ts: int, jitter: bool, rng) -> int:

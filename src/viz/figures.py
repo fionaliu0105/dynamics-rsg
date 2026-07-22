@@ -39,6 +39,42 @@ def savefig(fig, name: str, out_dir: Path = RESULTS_DIR) -> Path:
     return path
 
 
+def training_loss_curve(losses: Sequence[float], rule: str, seed: int, out_dir: Path = RESULTS_DIR) -> Path:
+    """Plot one run's training loss curve from saved metrics."""
+    vals = np.asarray(losses, dtype=float)
+    fig, ax = plt.subplots(figsize=(6, 4))
+    ax.plot(np.arange(vals.size), vals, color="#2f6f73", linewidth=1.5)
+    ax.set_xlabel("iteration")
+    ax.set_ylabel("masked MSE")
+    ax.set_title(f"{rule.upper()} seed {seed}: training loss")
+    ax.grid(True, color="#d0d7de", linewidth=0.6, alpha=0.8)
+    return savefig(fig, f"{rule}_seed{seed:04d}_training_loss", out_dir)
+
+
+def behavior_panel(eval_records: Sequence[dict], rule: str, seed: int, out_dir: Path = RESULTS_DIR) -> Path:
+    """Plot produced interval against sample interval, grouped by prior."""
+    fig, ax = plt.subplots(figsize=(6, 4))
+    colors = {"short": "#3b6ea8", "long": "#b45f3c"}
+    for prior in sorted({str(r["prior"]) for r in eval_records}):
+        rows = [r for r in eval_records if r["prior"] == prior]
+        ts = np.asarray([r["ts"] for r in rows], dtype=float)
+        produced = np.asarray([r["tp"] for r in rows], dtype=float)
+        keep = np.isfinite(produced)
+        ax.scatter(ts[keep], produced[keep], label=prior, color=colors.get(prior), s=32)
+        if keep.sum() >= 3:
+            slope, intercept = np.polyfit(ts[keep], produced[keep], 1)
+            xs = np.linspace(ts[keep].min(), ts[keep].max(), 50)
+            ax.plot(xs, slope * xs + intercept, color=colors.get(prior), linewidth=1.2)
+    ax.plot([450, 1250], [450, 1250], color="#6b7280", linestyle="--", linewidth=1.0)
+    ax.set_xlim(450, 1250)
+    ax.set_xlabel("ts (ms)")
+    ax.set_ylabel("tp (ms)")
+    ax.set_title(f"{rule.upper()} seed {seed}: behavior")
+    ax.legend(title="prior", frameon=False)
+    ax.grid(True, color="#d0d7de", linewidth=0.6, alpha=0.8)
+    return savefig(fig, f"{rule}_seed{seed:04d}_tp_vs_ts", out_dir)
+
+
 def summary_distance_figure(
     distances: Dict[str, Dict[str, Sequence[float]]],
     out_dir: Path = RESULTS_DIR,

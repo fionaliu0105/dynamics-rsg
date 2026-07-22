@@ -21,7 +21,7 @@ import numpy as np
 
 from src.behavior.slope import tp
 from src.conditions import Condition
-from src.task.rsg import build_trial, make_batch
+from src.task.rsg import build_trial, make_batch, ramp
 from src.training.config import Config
 
 
@@ -68,6 +68,35 @@ def test_make_batch_shapes_target_mask():
         assert np.allclose(batch.inputs[i, :, 1], cfg.prior_context[cond.prior])
         assert np.allclose(batch.inputs[i, :, 2], cfg.effector_context[cond.effector])
     print("test_make_batch_shapes_target_mask OK")
+
+
+def test_ramp_holds_above_threshold_after_reconciling_ramp_A():
+    """Regression for docs/RUNBOOK.md Gap #2.
+
+    Before this fix, the hold segment (t > ts) plateaued at exactly cfg.threshold,
+    so a well-trained network's tp validity was decided by noise at the margin --
+    confirmed directly: a converged BPTT run's peak output landed at 0.993-0.996
+    for 15/20 conditions, just under threshold, despite clearly having learned the
+    task. The hold must now rise to and settle at cfg.ramp_A (> cfg.threshold),
+    while the approach segment still crosses exactly cfg.threshold at t=ts (that
+    calibration is load-bearing for tp-vs-ts and must not move).
+    """
+    cfg = Config.reduced()
+    assert cfg.ramp_A > cfg.threshold, "fixture assumption: ramp_A configured above threshold"
+    ts_steps = 100
+
+    at_ts = ramp(np.array([ts_steps], dtype=float), ts_steps, cfg)[0]
+    assert abs(float(at_ts) - cfg.threshold) < 1e-6, at_ts
+
+    at_hold_end = ramp(np.array([ts_steps + cfg.prod_hold_step], dtype=float), ts_steps, cfg)[0]
+    assert abs(float(at_hold_end) - cfg.ramp_A) < 1e-6, at_hold_end
+
+    past_hold = ramp(np.array([ts_steps + cfg.prod_hold_step + 50], dtype=float), ts_steps, cfg)[0]
+    assert abs(float(past_hold) - cfg.ramp_A) < 1e-6, past_hold
+
+    mid_hold = ramp(np.array([ts_steps + cfg.prod_hold_step // 2], dtype=float), ts_steps, cfg)[0]
+    assert cfg.threshold < float(mid_hold) < cfg.ramp_A, mid_hold
+    print("test_ramp_holds_above_threshold_after_reconciling_ramp_A OK")
 
 
 def test_target_tp_consistency():

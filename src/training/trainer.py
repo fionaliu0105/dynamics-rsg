@@ -1,8 +1,10 @@
 """Shared, restart-safe trainer for one RSG network seed.
 
 The task, checkpointing, metrics, and activation export paths are identical for
-BPTT and predictive coding.  Only the parameter update differs: BPTT uses Adam
-and autograd, while ``PCRNN.infer_and_update`` applies the local PC update.
+BPTT and predictive coding, and so is the optimizer (Adam).  Only the *direction*
+differs: BPTT gets it from autograd, while ``PCRNN.infer_and_update`` computes it
+from local prediction errors.  Holding the optimizer fixed is what lets a
+PC-vs-BPTT difference be attributed to the learning rule.
 """
 
 from __future__ import annotations
@@ -13,6 +15,8 @@ import logging
 import os
 import socket
 import subprocess
+import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -93,6 +97,21 @@ def _atomic_json(payload: dict[str, Any], path: Path) -> None:
     tmp.replace(path)
 
 
+def _read_or_init_run_meta(run_dir: Path) -> dict[str, Any]:
+    """Return this run's persisted metadata, creating it on the first invocation.
+
+    ``started_at`` is written once and never overwritten, so it survives resumes —
+    it answers "when did this run first start," not "when did this process start"
+    (that's ``progress.json``'s ``elapsed_sec``, which is per-invocation).
+    """
+    path = run_dir / "run_meta.json"
+    if path.exists():
+        return json.loads(path.read_text())
+    meta = {"started_at": datetime.now().astimezone().isoformat()}
+    _atomic_json(meta, path)
+    return meta
+
+
 def _checkpoint_payload(
     model,
     optimizer,
@@ -170,7 +189,8 @@ def store_condition_activations(
             inputs_np, set_step = build_trial(cfg, condition, jitter=False)
             inputs = torch.as_tensor(inputs_np, dtype=torch.float32, device=device)
             outputs, states = model(inputs, noise=False)
-            produced = float(tp(outputs[0].detach().cpu().numpy(), set_step, cfg))
+            output_np = outputs[0].detach().cpu().numpy()
+            produced = float(tp(output_np, set_step, cfg))
             finite_tp = produced if np.isfinite(produced) else None
             store.write(
                 Record(
@@ -179,7 +199,12 @@ def store_condition_activations(
                     condition=condition,
                     states=states[0].detach().cpu().numpy(),
                     inputs=inputs_np[0],
-                    meta={"tp": finite_tp, "set_step": set_step},
+                    meta={
+                        "tp": finite_tp,
+                        "set_step": set_step,
+                        "threshold": cfg.threshold,
+                        "outputs": output_np.astype(np.float32).tolist(),
+                    },
                 )
             )
             behavior[condition.key] = {
@@ -222,6 +247,7 @@ def train_one_seed(
     run_dir.mkdir(parents=True, exist_ok=True)
     config_path = run_dir / "config.yaml"
     _validate_or_write_config(cfg, config_path)
+    run_meta = _read_or_init_run_meta(run_dir)
     completed_path = run_dir / "completed.json"
     if completed_path.exists():
         log.info("run already complete: %s", run_dir)
@@ -233,10 +259,16 @@ def train_one_seed(
     log.info("run identity: %s", identity)
 
     model = build_model(cfg).to(device)
+    # Default: both arms use Adam. The contrast this project makes is about the
+    # *learning rule* -- the direction each rule proposes -- so the step-size policy is
+    # held fixed alongside the architecture, or a PC-vs-BPTT difference also confounds
+    # Adam-vs-SGD. It is load-bearing in practice too: PC's recurrent update is ~4
+    # orders of magnitude smaller than its readout update, so under plain SGD J moves
+    # by ~2e-4 over 150 iterations (frozen) while Adam moves it by ~6.3. Set
+    # cfg.pc_optimizer="sgd" for the pure local rule. See docs/RUNBOOK.md "Gaps".
+    pc_uses_optimizer = cfg.rule != "pc" or cfg.pc_optimizer == "adam"
     optimizer = (
-        torch.optim.Adam(model.parameters(), lr=cfg.lr)
-        if cfg.rule == "bptt"
-        else None
+        torch.optim.Adam(model.parameters(), lr=cfg.lr) if pc_uses_optimizer else None
     )
     rng = np.random.default_rng(cfg.seed)
     start_iter = 0
@@ -250,6 +282,9 @@ def train_one_seed(
             latest_path, model, optimizer, rng, device
         )
         log.info("resuming at iteration %d", start_iter)
+
+    progress_every = max(1, checkpoint_every // 10)
+    start_time = time.time()
 
     model.train()
     for iteration in range(start_iter, cfg.n_iter):
@@ -270,15 +305,41 @@ def train_one_seed(
             optimizer.step()
             loss = float(loss_tensor.detach().cpu())
         else:
-            diagnostics = model.infer_and_update(inputs, target, mask)
+            # PC computes its own local updates instead of autograd, but they are
+            # gradients in the same sense, so they are handed to the same optimizer
+            # rather than applied as plain SGD inside the model.
+            diagnostics = model.infer_and_update(
+                inputs, target, mask, apply_update=optimizer is None
+            )
             loss = float(diagnostics["loss"])
             if not np.isfinite(loss):
                 raise FloatingPointError(f"non-finite PC loss at iteration {iteration}")
+            if optimizer is not None:
+                optimizer.zero_grad(set_to_none=False)
+                for name, parameter in model.named_parameters():
+                    parameter.grad = diagnostics["updates"][name].to(parameter.device).clone()
+                optimizer.step()
 
         losses.append(loss)
         if loss < best_loss:
             best_loss = loss
             best_state = copy.deepcopy(model.state_dict())
+
+        if (iteration + 1) % progress_every == 0 or (iteration + 1) == cfg.n_iter:
+            elapsed_sec = time.time() - start_time
+            done_this_run = iteration + 1 - start_iter
+            _atomic_json(
+                {
+                    "started_at": run_meta["started_at"],
+                    "updated_at": datetime.now().astimezone().isoformat(),
+                    "iteration": iteration + 1,
+                    "n_iter": cfg.n_iter,
+                    "latest_loss": loss,
+                    "elapsed_sec": elapsed_sec,
+                    "iters_per_sec": done_this_run / elapsed_sec if elapsed_sec > 0 else 0.0,
+                },
+                run_dir / "progress.json",
+            )
 
         if (iteration + 1) % checkpoint_every == 0 or iteration + 1 == cfg.n_iter:
             _atomic_torch_save(
@@ -302,6 +363,8 @@ def train_one_seed(
     )
     metrics = {
         "identity": identity,
+        "started_at": run_meta["started_at"],
+        "finished_at": datetime.now().astimezone().isoformat(),
         "n_iter": cfg.n_iter,
         "losses": losses,
         "best_loss": finite_best,
