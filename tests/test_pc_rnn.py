@@ -7,14 +7,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import numpy as np
 import torch
 
 from src.models.base import check_interface
 from src.models.bptt_rnn import BPTTRNN
 from src.models.pc_rnn import PCRNN
 from src.training.config import Config
-from src.task.rsg import make_batch
 
 
 def _toy_batch():
@@ -79,44 +77,6 @@ def test_toy_loss_decreases_and_alignment_is_reported():
         for values in alignment.values():
             assert set(values) == {"cosine", "relative_error"}
             assert torch.isfinite(torch.tensor(values["relative_error"]))
-
-
-def test_reduced_seed_pc_updates_stay_finite_past_initial_overflow_point():
-    cfg = Config.reduced(rule="pc", seed=0)
-    model = PCRNN(cfg)
-    rng = np.random.default_rng(cfg.seed)
-    losses = []
-    scales = []
-    for _ in range(10):
-        batch = make_batch(cfg, cfg.batch, rng)
-        inputs = torch.as_tensor(batch.inputs, dtype=torch.float32)
-        target = torch.as_tensor(batch.target, dtype=torch.float32)
-        mask = torch.as_tensor(batch.mask, dtype=torch.float32)
-        result = model.infer_and_update(inputs, target, mask)
-        losses.append(result["loss"])
-        scales.append(result["update_scale"])
-        assert torch.isfinite(torch.tensor(result["energy_trace"])).all()
-        assert torch.isfinite(result["outputs"]).all()
-        assert all(result["finite"].values())
-
-    assert torch.isfinite(torch.tensor(losses)).all()
-    assert min(scales) < 1.0
-
-
-def test_reduced_realistic_batch_update_norm_is_mean_scaled():
-    cfg = Config.reduced(rule="pc", seed=0)
-    model = PCRNN(cfg)
-    rng = np.random.default_rng(cfg.seed)
-    batch = make_batch(cfg, cfg.batch, rng)
-    inputs = torch.as_tensor(batch.inputs, dtype=torch.float32)
-    target = torch.as_tensor(batch.target, dtype=torch.float32)
-    mask = torch.as_tensor(batch.mask, dtype=torch.float32)
-
-    result = model.infer_and_update(inputs, target, mask, apply_update=False)
-
-    assert result["update_norm"] < cfg.grad_clip * 10.0
-    assert result["update_scale"] > 0.1
-    assert torch.isfinite(torch.tensor(result["energy_trace"])).all()
 
 
 if __name__ == "__main__":

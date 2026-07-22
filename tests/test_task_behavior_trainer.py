@@ -7,6 +7,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import json
+
 import numpy as np
 
 from src.behavior.slope import slopes_by_prior, tp
@@ -74,18 +76,20 @@ def test_tp_and_slopes_by_prior():
 
 
 def test_train_one_seed_tiny_bptt(tmp_path):
-    metrics = train_one_seed(_tiny_cfg("bptt"), tmp_path / "bptt")
-    assert metrics["finite_loss"]
+    run_dir = tmp_path / "bptt"
+    train_one_seed(_tiny_cfg("bptt"), run_dir)
+    metrics = json.loads((run_dir / "metrics.json").read_text())
+    assert np.isfinite(metrics["losses"]).all()
     assert len(metrics["losses"]) == 2
-    assert len(metrics["eval"]) == 20
-    assert (tmp_path / "bptt" / "metrics.json").exists()
-    assert (tmp_path / "bptt" / "activations" / "bptt" / "seed_0004").exists()
+    assert len(metrics["behavior_by_condition"]) == 20
+    assert (run_dir / "activations" / "bptt" / "seed_0004").exists()
 
 
 def test_train_one_seed_tiny_pc(tmp_path):
-    metrics = train_one_seed(_tiny_cfg("pc"), tmp_path / "pc")
-    assert metrics["finite_loss"]
+    run_dir = tmp_path / "pc"
+    train_one_seed(_tiny_cfg("pc"), run_dir)
+    metrics = json.loads((run_dir / "metrics.json").read_text())
+    assert np.isfinite(metrics["losses"]).all()
     assert len(metrics["losses"]) == 2
-    assert len(metrics["eval"]) == 20
-    assert (tmp_path / "pc" / "metrics.json").exists()
-    assert (tmp_path / "pc" / "activations" / "pc" / "seed_0004").exists()
+    assert len(metrics["behavior_by_condition"]) == 20
+    assert (run_dir / "activations" / "pc" / "seed_0004").exists()
