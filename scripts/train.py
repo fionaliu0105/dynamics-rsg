@@ -30,6 +30,8 @@ def build_config(args) -> Config:
             overrides["seed"] = args.seed
         if args.task_source is not None:
             overrides["task_source"] = args.task_source
+        if args.pc_inference_steps is not None:
+            overrides["pc_inference_steps"] = args.pc_inference_steps
         if overrides:
             cfg = Config.from_dict({**cfg.to_dict(), **overrides})
         return cfg
@@ -41,6 +43,8 @@ def build_config(args) -> Config:
         overrides["seed"] = args.seed
     if args.task_source is not None:
         overrides["task_source"] = args.task_source
+    if args.pc_inference_steps is not None:
+        overrides["pc_inference_steps"] = args.pc_inference_steps
     return make(**overrides)
 
 
@@ -52,6 +56,8 @@ def main(argv=None) -> int:
     p.add_argument("--seed", type=int)
     p.add_argument("--task-source", choices=["neurogym", "standalone"],
                    help="task data generator (default from config: neurogym)")
+    p.add_argument("--pc-inference-steps", type=int, default=None,
+                   help="override cfg.pc_inference_steps (PC value-relaxation steps; default from config: 20)")
     p.add_argument("--run-dir", type=str, default="results/runs")
     p.add_argument(
         "--activation-store",
