@@ -83,11 +83,18 @@ def ramp(t_rel_steps, ts_steps: int, cfg: Config) -> np.ndarray:
     technically "crossed" threshold was decided by noise at the margin
     (confirmed directly: a converged BPTT run's peak output landed at
     0.993-0.996 for 15/20 conditions — a near-perfect match to the old target,
-    just under threshold). Holding at ``cfg.ramp_A`` instead — matching the
-    reconstruction's own quoted ramp amplitude, ~3.0/2.85, itself one of the
-    "UNVALIDATED reconstruction constants" per AGENTS.md — gives real margin
+    just under threshold). Holding at ``cfg.ramp_A`` instead gives real margin
     above threshold, without touching the approach segment's crossing-at-ts
     calibration.
+
+    ``cfg.ramp_A`` default is ``1.2`` (1.2x threshold) — **not** the
+    reconstruction's literal quoted ramp amplitude (~3.0/2.85, itself one of the
+    "UNVALIDATED reconstruction constants" per AGENTS.md). That literal value was
+    tried first (2026-07-21 night) and was too big a jump in target dynamic range
+    for the current training budget: BPTT, which otherwise tracks this task well,
+    failed to converge at all under it (n_iter=3000, loss 1.28->0.69 instead of
+    ->0.004). 1.2x matches the margin separately described in team notes as
+    already tested and working.
 
     This is one defensible reconciliation of ``cfg.ramp_A`` (linear hold rise),
     not a verified match to the original paper's Eq. 9 — flag it as such if a

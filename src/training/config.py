@@ -68,7 +68,13 @@ class Config:
     w_m: float = 0.05                         # Weber fraction of scalar meas. noise
     threshold: float = 1.0                    # Go threshold (Methods z=1; net 0.99)
     ramp_a: float = 2.8                       # ramp shape (paper 2.8; saved 3.3)
-    ramp_A: float = 3.0                       # ramp amplitude (paper 3; saved 2.85)
+    # Hold-segment ceiling in src/task/rsg.py::ramp() (2026-07-21/22 reconciliation of
+    # this previously-unused constant; see docs/RUNBOOK.md Gaps #2). The literal
+    # paper/saved-net value (~3.0/2.85) was tried first and was too big a jump in
+    # target dynamic range for the current training budget -- even BPTT failed to
+    # converge under it (n_iter=3000, loss 1.28->0.69). 1.2x threshold matches the
+    # margin team notes independently describe as already tested and working.
+    ramp_A: float = 1.2                       # hold ceiling (was 3.0; paper 3/saved 2.85)
 
     # --- optimisation -----------------------------------------------------------
     lr: float = 1e-3
