@@ -1,0 +1,1 @@
+﻿[train] rule=pc seed=0 regime dt=5.0 N=160 pc_inference_steps=20 -> results\runs\pc\seed_0000

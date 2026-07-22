@@ -41,13 +41,13 @@ So this is now confirmed as a real behavioral effect, not just an artifact of th
 
 ## Where to look
 
-- **The clean Bayesian-bias result (Finding 1 resolved):** `results/figures/bptt_seed0000_tp_vs_ts.png` and `results/figures/pc_activity/bptt_v4_output_vs_target.png`. Full numbers: `results/runs_v4/bptt/seed_0000/metrics.json`.
-- **PC's flat collapse, before and after the task fix:** `results/figures/pc_activity/pc_v2_output_vs_target.png` (pre-fix) and `results/figures/pc_activity/pc_v3_output_vs_target.png` (post-fix, still collapsed under the too-aggressive 3x margin — a different manifestation of the same PC problem, not a new one).
-- **The `pc_inference_steps=100` partial improvement (post-task-fix):** `results/figures/pc_activity/pc_v4_steps100_output_vs_target.png` — look for the faint fan-out in the yellow (`long/hand`) traces.
-- **BPTT failing to converge under the too-aggressive 3x margin** (why that attempt was abandoned): `results/figures/pc_activity/bptt_v3_output_vs_target.png`.
-- Full numbers by run: `results/runs_v2` (pre-task-fix), `results/runs_v3` (3x margin, abandoned), `results/runs_v4` (1.2x margin, working; also has `pc_steps20`/`pc_steps100` subdirectories for the paired comparison).
+- **The clean Bayesian-bias result (Finding 1 resolved):** `results/archive/bptt_seed0000_tp_vs_ts_pilot.png` and `results/archive/pc_activity/bptt_v4_output_vs_target.png` (pilot run, pre-cluster). The equivalent real cluster run at this same seed number is a *different, unrelated* result — see `results/runs_summary.csv` / `notebooks/results_summary.ipynb` for the real 10-seed sweep. Full numbers: `results/archive/runs_v4/bptt/seed_0000/metrics.json`.
+- **PC's flat collapse, before and after the task fix:** `results/archive/pc_activity/pc_v2_output_vs_target.png` (pre-fix) and `results/archive/pc_activity/pc_v3_output_vs_target.png` (post-fix, still collapsed under the too-aggressive 3x margin — a different manifestation of the same PC problem, not a new one).
+- **The `pc_inference_steps=100` partial improvement (post-task-fix):** `results/archive/pc_activity/pc_v4_steps100_output_vs_target.png` — look for the faint fan-out in the yellow (`long/hand`) traces.
+- **BPTT failing to converge under the too-aggressive 3x margin** (why that attempt was abandoned): `results/archive/pc_activity/bptt_v3_output_vs_target.png`.
+- Full numbers by run: `results/archive/runs_v2` (pre-task-fix), `results/archive/runs_v3` (3x margin, abandoned), `results/archive/runs_v4` (1.2x margin, working; also has `pc_steps20`/`pc_steps100` subdirectories for the paired comparison). All three are pre-cluster, single-seed pilot runs — moved under `results/archive/` for tidiness once the real 10-seed cluster sweep (`results/runs/`, `results/runs_pc_steps100/`) superseded them; kept for the record, not part of the sweep's own results.
 - The tutorial notebook: `notebooks/pc_tutorial.ipynb` (still reads the old `results_v2` PC run; not yet updated with any of this).
 - The task fix itself: `src/task/rsg.py::ramp()`, `cfg.ramp_A` in `src/training/config.py`.
 - PC's current code: `src/models/pc_rnn.py` (`_rescale_updates`, `_relax`, `cfg.pc_optimizer`, `cfg.pc_clip_mode`).
 - Full technical trail with exact numbers for everything above: `.suplex/docs/discrepancy_log.md` (2026-07-21/22 entries).
-- Historical context (pre-merge state, superseded): `results/figures/pc_activity_pre_merge_2026-07-21/`.
+- Historical context (pre-merge state, superseded): `results/archive/pc_activity_pre_merge_2026-07-21/`.

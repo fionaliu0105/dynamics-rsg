@@ -30,6 +30,8 @@ def build_config(args) -> Config:
             overrides["seed"] = args.seed
         if args.task_source is not None:
             overrides["task_source"] = args.task_source
+        if args.pc_inference_steps is not None:
+            overrides["pc_inference_steps"] = args.pc_inference_steps
         if overrides:
             cfg = Config.from_dict({**cfg.to_dict(), **overrides})
         return cfg
@@ -41,6 +43,8 @@ def build_config(args) -> Config:
         overrides["seed"] = args.seed
     if args.task_source is not None:
         overrides["task_source"] = args.task_source
+    if args.pc_inference_steps is not None:
+        overrides["pc_inference_steps"] = args.pc_inference_steps
     return make(**overrides)
 
 
@@ -52,12 +56,18 @@ def main(argv=None) -> int:
     p.add_argument("--seed", type=int)
     p.add_argument("--task-source", choices=["neurogym", "standalone"],
                    help="task data generator (default from config: neurogym)")
+    p.add_argument("--pc-inference-steps", type=int, default=None,
+                   help="override cfg.pc_inference_steps (PC value-relaxation steps; default from config: 20)")
     p.add_argument("--run-dir", type=str, default="results/runs")
     p.add_argument(
         "--activation-store",
         type=str,
         default=None,
-        help="shared ActivationStore root (default: sibling 'activations' of --run-dir)",
+        help="ActivationStore root (default: 'activations' nested under --run-dir itself, "
+             "so distinct --run-dir values naturally get distinct stores -- do not change "
+             "this to be derived from --run-dir's *parent*, which is 'results/' for every "
+             "run regardless of --run-dir and silently collides across hyperparameter "
+             "variants sharing the same rule; see docs/hpc_runbook.md)",
     )
     p.add_argument("--dry-run", action="store_true", help="build+print config, don't train")
     args = p.parse_args(argv)
@@ -74,7 +84,7 @@ def main(argv=None) -> int:
     activation_store = (
         Path(args.activation_store)
         if args.activation_store
-        else Path(args.run_dir).parent / "activations"
+        else Path(args.run_dir) / "activations"
     )
     train_one_seed(cfg, run_dir, activation_store_root=activation_store)
     return 0

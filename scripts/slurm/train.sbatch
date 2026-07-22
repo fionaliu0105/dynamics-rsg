@@ -39,6 +39,9 @@
 # (matches scripts/run_sweep.sh's --config-dir convention; CONFIG wins if set):
 #   CONFIG=configs/pc.yaml sbatch --array=0-9 --export=ALL,CONFIG scripts/slurm/train.sbatch
 #
+# Override cfg.pc_inference_steps (default from config: 20) without a config file:
+#   RULE=pc PC_INFERENCE_STEPS=100 sbatch --array=0-9 --export=ALL,RULE,PC_INFERENCE_STEPS scripts/slurm/train.sbatch
+#
 # --cpus-per-task / --mem above are sized for the reduced regime on this project's
 # current CPU-only (no GPU configured on this cluster) architecture -- not a
 # cluster-verified requirement, just a reasonable starting point. Raise them for
@@ -55,6 +58,8 @@ REGIME="${REGIME:-reduced}"
 TASK_SOURCE="${TASK_SOURCE:-}"
 RUN_DIR="${RUN_DIR:-results/runs}"
 CONFIG="${CONFIG:-}"
+PC_INFERENCE_STEPS="${PC_INFERENCE_STEPS:-}"
+ACTIVATION_STORE="${ACTIVATION_STORE:-}"
 
 module use /software/sld/modulefiles
 module load python/3.11.10
@@ -73,6 +78,12 @@ else
 fi
 if [ -n "$TASK_SOURCE" ]; then
   cmd+=(--task-source "$TASK_SOURCE")
+fi
+if [ -n "$PC_INFERENCE_STEPS" ]; then
+  cmd+=(--pc-inference-steps "$PC_INFERENCE_STEPS")
+fi
+if [ -n "$ACTIVATION_STORE" ]; then
+  cmd+=(--activation-store "$ACTIVATION_STORE")
 fi
 
 echo "[slurm] host=$(hostname) job=${SLURM_JOB_ID:-none} array_task=${SLURM_ARRAY_TASK_ID:-none} git=$GIT_SHA"
