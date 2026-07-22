@@ -27,6 +27,8 @@ batch: 64
 grad_clip: 1.0
 pc_inference_steps: 20
 pc_inference_lr: 0.1
+pc_normalize: true
+pc_grad_clip: 1.0
 n_seeds: 10
 prior_context:
   short: 0.3

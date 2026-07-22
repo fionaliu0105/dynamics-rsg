@@ -79,6 +79,13 @@ class Config:
     # --- predictive coding (ignored when rule == "bptt") ------------------------
     pc_inference_steps: int = 20              # value-relaxation steps; SWEEP THIS
     pc_inference_lr: float = 0.1              # latent-state update rate
+    # PC local updates are a SUM over batch and time (the PC energy is a sum),
+    # whereas the BPTT arm's loss is a mean (masked_mse). Left raw, the PC step is
+    # ~B*T larger at the same `lr` and diverges in ~7-10 iters. These two knobs put
+    # the PC step on the BPTT scale: mean-reduce by batch, then clip the global
+    # update norm (the paper's only stated stability measure was clamping updates).
+    pc_normalize: bool = True                 # divide each local update by batch (per-trial mean)
+    pc_grad_clip: float = 1.0                 # global-norm clip on the PC update (0/None disables)
 
     # --- sweep bookkeeping ------------------------------------------------------
     n_seeds: int = 10                         # default seeds per (rule x sweep-point)

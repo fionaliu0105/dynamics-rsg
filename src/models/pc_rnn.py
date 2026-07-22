@@ -257,9 +257,15 @@ class PCRNN(nn.Module, Model):
 
     @staticmethod
     def _metrics(pc_update: torch.Tensor, bptt_grad: torch.Tensor) -> Dict[str, float]:
-        """Summarize one PC update against one autograd descent direction."""
-        # PC updates descend energy, exactly like negative BPTT gradients.
-        reference = -bptt_grad
+        """Summarize one PC update against the autograd gradient direction.
+
+        ``infer_and_update`` stores the raw energy gradient ``+dE/dtheta`` (the
+        descent sign ``-lr`` is applied only at update time), and the reference
+        loss below is likewise a plain gradient ``+dLoss/dtheta``. A correct PC
+        update therefore aligns with the *positive* autograd gradient, so cosine
+        near +1 / relative_error near 0 is the pass signal.
+        """
+        reference = bptt_grad
         denom = pc_update.norm() * reference.norm()
         cosine = float((pc_update.flatten() @ reference.flatten() / denom).item()) if denom > 0 else float("nan")
         relative_error = float((pc_update - reference).norm().div(reference.norm().clamp_min(1e-12)).item())
@@ -325,8 +331,23 @@ class PCRNN(nn.Module, Model):
             if not all(finite.values()) or not torch.isfinite(values).all() or not torch.isfinite(energy):
                 raise FloatingPointError("non-finite PC inference value, energy, or update")
             if apply_update:
+                # The raw local updates are a SUM over batch and time; applied as-is
+                # they are ~B*T larger than the BPTT arm's mean-reduced step and
+                # diverge in a handful of iterations. Put the step on the BPTT scale:
+                # per-trial mean (/ batch), then clip the global update norm. Both are
+                # config knobs (cfg.pc_normalize, cfg.pc_grad_clip); the returned
+                # `updates` stay raw so bptt_update_alignment compares like-for-like.
+                batch = inputs.shape[0]
+                scale = (1.0 / batch) if self.cfg.pc_normalize else 1.0
+                step = {name: value * scale for name, value in updates.items()}
+                clip = self.cfg.pc_grad_clip
+                if clip:
+                    total_norm = torch.sqrt(sum((s * s).sum() for s in step.values()))
+                    if float(total_norm) > clip:
+                        factor = clip / (float(total_norm) + 1e-12)
+                        step = {name: s * factor for name, s in step.items()}
                 for name, parameter in parameters.items():
-                    parameter.add_(-self.cfg.lr * updates[name])
+                    parameter.add_(-self.cfg.lr * step[name])
                 if not all(torch.isfinite(parameter).all() for parameter in parameters.values()):
                     raise FloatingPointError("non-finite parameter after PC update")
 
@@ -353,9 +374,10 @@ class PCRNN(nn.Module, Model):
         ``{"J": {"cosine": float, "relative_error": float}, ...}``
 
         and includes entries for ``J``, ``B``, ``c_x``, ``x0``, ``w_o``, and
-        ``c_z``.  ``cosine`` compares the PC update to the negative autograd
-        gradient; ``relative_error`` is the normed difference from that descent
-        direction.
+        ``c_z``.  ``cosine`` compares the PC update to the (positive) autograd
+        gradient of the same summed loss; ``relative_error`` is the normed
+        difference from it. Cosine near +1 means the PC update points the same way
+        as the true gradient.
         """
         result = self.infer_and_update(inputs, target, mask, apply_update=False)
         self.zero_grad(set_to_none=True)

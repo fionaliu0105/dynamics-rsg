@@ -117,13 +117,22 @@ rule-vs-rule check (JSON only).
 
 ## Gaps & coordination (read before the first real run)
 
-1. **PC training is numerically unstable in the reduced regime — the current blocker
-   for a PC-vs-BPTT run.** As of the smoke below, PC (`src/models/pc_rnn.py`
-   `infer_and_update`) diverges to non-finite within ~7–10 iterations across seeds;
-   lowering `pc_inference_lr` (0.1→0.02) or `lr` (1e-3→2e-4) doesn't fix it (points at
-   the local-update direction/scale, not a hyperparameter). **BPTT trains and runs the
-   full pipeline end to end.** Owned by the PC track. Note the trainer's PC test only
-   covers a 1-iteration `N=8` config, so it does not catch this.
+1. **PC training divergence — RESOLVED (2026-07-21).** PC (`src/models/pc_rnn.py`
+   `infer_and_update`) used to diverge to non-finite within ~7–10 iterations. Root
+   cause was **scale, not direction**: the local updates sum over batch and time (the
+   PC energy is a sum), so at reduced-regime scale (`batch*time ≈ 29k`) the step was
+   ~1800× the BPTT arm's mean-reduced, Adam-normalized, grad-clipped step — which is
+   why cutting `lr` 5× never helped (you'd need ~10³×). The direction was correct all
+   along (the PC update equals the true gradient; verified via `bptt_update_alignment`,
+   `cosine=+1.000`). Fix: two config knobs, on by default — `pc_normalize` (per-trial
+   mean, ÷batch) and `pc_grad_clip` (global-norm clip, mirroring BPTT's
+   `clip_grad_norm_`). Reduced-regime PC now trains: loss 0.187→0.084 in an 80-iter
+   smoke, all-finite, 20-condition store exported. Regression tests
+   `test_applied_pc_step_is_norm_clipped` / `test_pc_is_stable_over_iterations_at_scale`
+   in `tests/test_pc_rnn.py` guard it at a `batch*time` large enough to bite (the older
+   toy test was `N=12, batch=4` ≈ 76, too small to catch it). A **full reduced PC seed
+   spread has not yet been run end to end** — do that next to enable the PC-vs-BPTT
+   contrast.
 2. **Behavior Fig 1E** — the trainer now computes tp-vs-ts slopes and per-condition
    `tp` into each seed's `metrics.json` (`behavior_slopes`, `behavior_by_condition`),
    so the *data* exists; only a figure runner over the store is still missing. Behavior

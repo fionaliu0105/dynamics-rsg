@@ -1,7 +1,9 @@
 # Faithful-regime predictive-coding run config (dt=1, N=200). One seed per
 # invocation — pass --seed at the CLI to override. `pc_inference_steps` is the key PC
-# knob to sweep (5/20/100). The reconstruction constants (w_m, threshold, ramp_a,
-# ramp_A) are UNVALIDATED knobs to sweep, not settled values (AGENTS.md). Regenerate:
+# knob to sweep (5/20/100). `pc_normalize` + `pc_grad_clip` put the local update on the
+# BPTT arm's mean-reduced scale (without them PC diverges in ~7-10 iters). The
+# reconstruction constants (w_m, threshold, ramp_a, ramp_A) are UNVALIDATED knobs to
+# sweep, not settled values (AGENTS.md). Regenerate:
 # python -c "from src.training.config import Config;
 # Config.faithful(rule='pc').to_yaml('configs/pc.yaml')". Reduced smoke uses
 # `--regime reduced` flags instead of this file.
@@ -28,6 +30,8 @@ batch: 64
 grad_clip: 1.0
 pc_inference_steps: 20
 pc_inference_lr: 0.1
+pc_normalize: true
+pc_grad_clip: 1.0
 n_seeds: 10
 prior_context:
   short: 0.3
