@@ -5,3 +5,12 @@ __pycache__/
 .venv/
 .suplex/
 SUPLEX.md
+.pytest_cache/
+.pytest_tmp/
+results/runs/
+results/checkpoints/
+results/**/checkpoints/
+results/**/activations/
+results/**/*.pt
+results/**/*.pth
+results/**/*.ckpt

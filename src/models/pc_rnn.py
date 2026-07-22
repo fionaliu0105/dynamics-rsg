@@ -173,6 +173,13 @@ class PCRNN(nn.Module, Model):
         values = self._effector_values.to(device=inputs.device, dtype=inputs.dtype)
         return torch.argmin((inputs[:, 0, 2:3] - values.unsqueeze(0)).abs(), dim=-1)
 
+    @staticmethod
+    def _normalization_counts(temporal_error: torch.Tensor, mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return natural PC-A denominators for temporal and scored-output terms."""
+        temporal_count = temporal_error.new_tensor(max(temporal_error.shape[0] * temporal_error.shape[1], 1))
+        output_count = mask.to(dtype=temporal_error.dtype).sum().clamp_min(1.0)
+        return temporal_count, output_count
+
     def _energy_and_errors(self, values, inputs, target, mask):
         """Return PC energy and prediction errors for the current value nodes.
 
@@ -182,9 +189,10 @@ class PCRNN(nn.Module, Model):
         ``x_t + alpha * (-x_t + J tanh(x_t) + B u_t + c_x)``.
 
         The output error compares the effector-gated readout to ``target`` and is
-        multiplied by ``mask`` so only scored time points contribute.  The scalar
-        energy is half the sum of squared temporal errors plus half the sum of
-        squared masked output errors.
+        multiplied by ``mask`` so only scored time points contribute.  Temporal
+        and output terms are normalized by their natural sample counts so the
+        PC energy and local updates stay comparable to BPTT's mean-normalized
+        masked loss at real task batch and sequence size.
         """
         alpha = self.cfg.alpha
         r = torch.tanh(values)
@@ -199,7 +207,8 @@ class PCRNN(nn.Module, Model):
         idx = self._effector_index(inputs).view(-1, 1, 1).expand(-1, values.shape[1], 1)
         output = both.gather(-1, idx).squeeze(-1)
         output_error = (output - target) * mask
-        energy = 0.5 * (temporal_error.square().sum() + output_error.square().sum())
+        temporal_count, output_count = self._normalization_counts(temporal_error, mask)
+        energy = 0.5 * (temporal_error.square().sum() / temporal_count + output_error.square().sum() / output_count)
         return energy, temporal_error, output_error, r, output
 
     def _value_gradient(self, values, inputs, temporal_error, output_error, mask):
@@ -213,35 +222,38 @@ class PCRNN(nn.Module, Model):
         alpha = self.cfg.alpha
         derivative = 1.0 - torch.tanh(values).square()
         grad = torch.zeros_like(values)
-        grad[:, 1:] += temporal_error
+        temporal_count, output_count = self._normalization_counts(temporal_error, mask)
+        grad[:, 1:] += temporal_error / temporal_count
 
         idx = self._effector_index(inputs)
         selected_w = self.w_o.detach()[idx]  # [B, N]
-        grad += (output_error.unsqueeze(-1) * selected_w.unsqueeze(1)) * derivative
+        grad += (output_error.unsqueeze(-1) * selected_w.unsqueeze(1)) * derivative / output_count
 
         # Each value also changes the one-step prediction that follows it.
-        propagated = (1.0 - alpha) * temporal_error + alpha * (temporal_error @ self.J.detach()) * derivative[:, :-1]
+        propagated = ((1.0 - alpha) * temporal_error + alpha * (temporal_error @ self.J.detach()) * derivative[:, :-1]) / temporal_count
         grad[:, :-1] -= propagated
         return grad
 
-    def _local_updates(self, values, inputs, temporal_error, output_error, r):
+    def _local_updates(self, values, inputs, temporal_error, output_error, r, mask):
         """Compute local parameter gradients with inferred values held fixed.
 
         Updates are returned for all PC-A parameter groups: ``J``, ``B``,
         ``c_x``, ``x0``, ``w_o``, and ``c_z``.  Recurrent/input/bias updates use
-        temporal Euler errors and the previous-step rates/inputs.  Readout
-        updates use masked, effector-gated output errors and only accumulate into
-        the readout row selected for each trial.
+        temporal Euler errors and the previous-step rates/inputs, normalized by
+        ``batch * (time - 1)``.  Readout updates use masked, effector-gated
+        output errors, normalized by ``mask.sum()``, and only accumulate into the
+        readout row selected for each trial.
         """
         alpha = self.cfg.alpha
         eps = temporal_error
         r_prev = r[:, :-1]
         u_prev = inputs[:, :-1]
+        temporal_count, output_count = self._normalization_counts(temporal_error, mask)
         updates = {
-            "J": -alpha * torch.einsum("bti,btj->ij", eps, r_prev),
-            "B": -alpha * torch.einsum("bti,btk->ik", eps, u_prev),
-            "c_x": -alpha * eps.sum(dim=(0, 1)),
-            "x0": self._value_gradient(values, inputs, temporal_error, output_error, torch.ones_like(output_error))[:, 0].sum(dim=0),
+            "J": -alpha * torch.einsum("bti,btj->ij", eps, r_prev) / temporal_count,
+            "B": -alpha * torch.einsum("bti,btk->ik", eps, u_prev) / temporal_count,
+            "c_x": -alpha * eps.sum(dim=(0, 1)) / temporal_count,
+            "x0": self._value_gradient(values, inputs, temporal_error, output_error, mask)[:, 0].sum(dim=0),
             "w_o": torch.zeros_like(self.w_o),
             "c_z": torch.zeros_like(self.c_z),
         }
@@ -251,9 +263,22 @@ class PCRNN(nn.Module, Model):
             if chosen.any():
                 err = output_error[chosen]
                 rates = r[chosen]
-                updates["w_o"][group] = torch.einsum("bt,bti->i", err, rates)
-                updates["c_z"][group] = err.sum()
+                updates["w_o"][group] = torch.einsum("bt,bti->i", err, rates) / output_count
+                updates["c_z"][group] = err.sum() / output_count
         return updates
+
+    def _clip_updates(self, updates: Dict[str, torch.Tensor]) -> tuple[Dict[str, torch.Tensor], float, float]:
+        """Clip the joint PC update vector using the shared training grad limit."""
+        total_norm = torch.sqrt(sum(update.square().sum() for update in updates.values()))
+        if not torch.isfinite(total_norm):
+            raise FloatingPointError("non-finite PC update norm")
+        limit = float(self.cfg.grad_clip)
+        if limit <= 0:
+            return updates, float(total_norm.item()), 1.0
+        scale = min(1.0, limit / (float(total_norm.item()) + 1e-12))
+        if scale == 1.0:
+            return updates, float(total_norm.item()), scale
+        return {name: update * scale for name, update in updates.items()}, float(total_norm.item()), scale
 
     @staticmethod
     def _metrics(pc_update: torch.Tensor, bptt_grad: torch.Tensor) -> Dict[str, float]:
@@ -276,8 +301,8 @@ class PCRNN(nn.Module, Model):
         2. Compute temporal Euler prediction errors between adjacent raw values.
         3. Compute masked output errors after selecting the active effector
            readout row from the tonic context input.
-        4. Define energy as ``0.5 * (sum(temporal_error**2) +
-           sum(masked_output_error**2))``.
+        4. Define energy as the sum of mean-normalized temporal and
+           masked-output squared errors.
         5. Relax values for ``cfg.pc_inference_steps`` using the local value
            gradient.  Backtracking halves the inference step size until energy is
            non-increasing, preserving a deterministic energy-descent diagnostic.
@@ -303,23 +328,30 @@ class PCRNN(nn.Module, Model):
         with torch.no_grad():
             values = self._raw_forward_values(inputs)
             energy, temporal_error, output_error, r, output = self._energy_and_errors(values, inputs, target, mask)
+            if not torch.isfinite(values).all() or not torch.isfinite(energy):
+                raise FloatingPointError("non-finite PC initial values or energy")
             trace = [float(energy.item())]
             for _ in range(self.cfg.pc_inference_steps):
                 grad = self._value_gradient(values, inputs, temporal_error, output_error, mask)
+                if not torch.isfinite(grad).all():
+                    raise FloatingPointError("non-finite PC value gradient")
                 step = self.cfg.pc_inference_lr
                 # Clamp x[0] to its parameter: it is the model's initial-value node.
                 while True:
                     candidate = values - step * grad
                     candidate[:, 0] = self.x0.detach().to(candidate.dtype)
                     candidate_energy, candidate_temporal, candidate_output, candidate_r, candidate_y = self._energy_and_errors(candidate, inputs, target, mask)
-                    if candidate_energy <= energy + 1e-7 or step < 1e-8:
+                    if torch.isfinite(candidate).all() and torch.isfinite(candidate_energy) and candidate_energy <= energy + 1e-7:
                         values, energy = candidate, candidate_energy
                         temporal_error, output_error, r, output = candidate_temporal, candidate_output, candidate_r, candidate_y
                         break
+                    if step < 1e-8:
+                        raise FloatingPointError("PC value relaxation could not find a finite descending step")
                     step *= 0.5
                 trace.append(float(energy.item()))
 
-            updates = self._local_updates(values, inputs, temporal_error, output_error, r)
+            updates = self._local_updates(values, inputs, temporal_error, output_error, r, mask)
+            updates, update_norm, update_scale = self._clip_updates(updates)
             parameters = {"J": self.J, "B": self.B, "c_x": self.c_x, "x0": self.x0, "w_o": self.w_o, "c_z": self.c_z}
             finite = {name: bool(torch.isfinite(value).all()) for name, value in updates.items()}
             if not all(finite.values()) or not torch.isfinite(values).all() or not torch.isfinite(energy):
@@ -336,6 +368,8 @@ class PCRNN(nn.Module, Model):
             "energy_trace": trace,
             "loss": float((0.5 * (output - target).square() * mask).sum().item() / mask.sum().clamp_min(1).item()),
             "updates": {name: value.detach().clone() for name, value in updates.items()},
+            "update_norm": update_norm,
+            "update_scale": update_scale,
             "values": values.detach().clone(),
             "outputs": output.detach().clone(),
             "finite": finite,

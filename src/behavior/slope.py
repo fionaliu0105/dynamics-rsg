@@ -23,6 +23,24 @@ from typing import Dict, Sequence
 
 import numpy as np
 
+from src.training.config import Config
+
+
+def tp(outputs: np.ndarray, set_step: int, cfg: Config) -> float:
+    """Produced interval in ms: first threshold crossing after Set.
+
+    The search skips one pulse width after Set to avoid scoring a Set-triggered
+    transient as the produced response. Returns ``NaN`` if the output never
+    reaches ``cfg.threshold`` before trial end.
+    """
+    y = np.asarray(outputs, dtype=float).reshape(-1)
+    start = min(max(set_step + cfg.pulse_width_step, 0), y.shape[0])
+    crossed = np.flatnonzero(y[start:] >= cfg.threshold)
+    if crossed.size == 0:
+        return float("nan")
+    crossing_step = start + int(crossed[0])
+    return float((crossing_step - set_step) * cfg.dt)
+
 
 def slopes_by_prior(
     ts: Sequence[float],
@@ -31,7 +49,20 @@ def slopes_by_prior(
 ) -> Dict[str, float]:
     """Least-squares slope of tp on ts, computed separately within each prior.
 
-    TODO(behavior-track): group by prior, drop NaN tp, fit ``np.polyfit(ts, tp, 1)``,
-    return the slope per prior. Require >= 3 valid points per prior or return NaN.
+    NaN produced intervals are dropped. Priors with fewer than three valid points
+    return NaN rather than forcing an unstable regression.
     """
-    raise NotImplementedError("Behavior track: implement slopes_by_prior (plan 2.2)")
+    ts_arr = np.asarray(ts, dtype=float)
+    tp_arr = np.asarray(tp, dtype=float)
+    priors = np.asarray(prior_labels)
+    if ts_arr.shape != tp_arr.shape or ts_arr.shape != priors.shape:
+        raise ValueError("ts, tp, and prior_labels must have matching one-dimensional lengths")
+
+    slopes: Dict[str, float] = {}
+    for prior in sorted(set(priors.tolist())):
+        keep = (priors == prior) & np.isfinite(ts_arr) & np.isfinite(tp_arr)
+        if int(keep.sum()) < 3:
+            slopes[str(prior)] = float("nan")
+        else:
+            slopes[str(prior)] = float(np.polyfit(ts_arr[keep], tp_arr[keep], 1)[0])
+    return slopes
