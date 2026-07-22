@@ -28,7 +28,7 @@ if [ -d .venv ]; then
   echo "[setup_env] reusing existing .venv"
 else
   echo "[setup_env] creating .venv"
-  python -m venv .venv
+  python3 -m venv .venv
 fi
 
 .venv/bin/pip install --upgrade pip
