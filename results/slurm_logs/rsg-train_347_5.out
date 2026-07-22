@@ -1,2 +1,0 @@
-[slurm] host=sld.umd.edu job=353 array_task=5 git=cc2e6ec
-[slurm] >>> /data/sld/homes/vguigon/dynamics-rsg/.venv/bin/python scripts/train.py --seed 5 --regime reduced --rule pc --run-dir results/runs_pc_steps100 --pc-inference-steps 100

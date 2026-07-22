@@ -1,0 +1,32 @@
+rule: pc
+seed: 6
+N: 160
+dt: 5.0
+tau: 10.0
+noise_sd: 0.01
+g: 1.0
+task_source: neurogym
+pulse_height: 0.4
+pulse_width: 83.0
+ready_onset: 100.0
+total_time: 3000.0
+prod_hold: 300.0
+w_m: 0.05
+threshold: 1.0
+ramp_a: 2.8
+ramp_A: 1.2
+lr: 0.001
+n_iter: 3000
+batch: 48
+grad_clip: 1.0
+pc_inference_steps: 100
+pc_inference_lr: 0.1
+pc_optimizer: adam
+pc_clip_mode: global_norm
+n_seeds: 10
+prior_context:
+  short: 0.3
+  long: 0.4
+effector_context:
+  eye: -0.2
+  hand: 0.2

@@ -27,6 +27,7 @@ from src.store import ActivationStore
 from src.task.rsg import ramp
 from src.training.config import Config
 from src.viz.figures import (
+    behavior_panel,
     output_vs_target_figure,
     pca_trajectories_figure,
     training_loss_figure,
@@ -53,6 +54,21 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--run-dir", type=str, default="results/runs/pc/seed_0000")
     p.add_argument("--out-dir", type=str, default=None)
+    p.add_argument(
+        "--activation-store",
+        type=str,
+        default=None,
+        help=(
+            "ActivationStore root (contains one dir per rule, e.g. 'pc/seed_0000/'). "
+            "Default: '<run-dir>/activations' if present (older nested-under-per-seed-dir "
+            "layout, from train_one_seed's own internal fallback when called directly), "
+            "else 'activations' nested under --run-dir's rule/runs base — matching "
+            "scripts/train.py's own default (fixed 2026-07-22 to be derived from "
+            "--run-dir itself, not its parent, so distinct --run-dir values don't collide; "
+            "see docs/hpc_runbook.md) when --activation-store wasn't passed at training "
+            "time."
+        ),
+    )
     args = p.parse_args(argv)
 
     run_dir = Path(args.run_dir)
@@ -66,13 +82,33 @@ def main(argv=None) -> int:
         )
     metrics = json.loads(metrics_path.read_text())
     cfg = Config.from_yaml(run_dir / "config.yaml")
+    prefix = cfg.rule
 
-    training_loss_figure(metrics["losses"], name="pc_training_loss", out_dir=out_dir)
+    training_loss_figure(metrics["losses"], name=f"{prefix}_training_loss", out_dir=out_dir)
+    behavior_panel(
+        list(metrics["behavior_by_condition"].values()), rule=cfg.rule, seed=cfg.seed, out_dir=out_dir,
+    )
 
-    store = ActivationStore(run_dir / "activations")
+    if args.activation_store:
+        store_root = Path(args.activation_store)
+    elif (run_dir / "activations").exists():
+        store_root = run_dir / "activations"
+    else:
+        # scripts/train.py's default when --activation-store isn't passed at
+        # training time: 'activations' nested under the --run-dir base itself
+        # (run_dir.parents[1] from a per-seed dir shaped like
+        # <base>/<rule>/seed_XXXX), NOT the per-seed run_dir, and NOT the
+        # base's parent (that was the pre-2026-07-22 default and is what
+        # caused the pc_steps20/pc_steps100 activation collision).
+        store_root = run_dir.parents[1] / "activations"
+
+    store = ActivationStore(store_root)
     records = {cond: store.read(cfg.rule, cfg.seed, cond) for cond in CONDITIONS if store.has(cfg.rule, cfg.seed, cond)}
     if not records:
-        raise FileNotFoundError(f"no activation records found under {run_dir / 'activations'}")
+        raise FileNotFoundError(
+            f"no activation records found under {store_root} "
+            "(pass --activation-store explicitly if it lives elsewhere)"
+        )
 
     labels = [cond.label for cond in records]
     states_by_condition = {cond.label: rec.states for cond, rec in records.items()}
@@ -80,7 +116,7 @@ def main(argv=None) -> int:
     first_cond = next(iter(records))
     unit_activity_figure(
         records[first_cond].states, dt=cfg.dt, out_dir=out_dir,
-        name="pc_unit_activity", title=f"PC unit activity: {first_cond.label}",
+        name=f"{prefix}_unit_activity", title=f"{prefix} unit activity: {first_cond.label}",
     )
 
     outputs = np.stack([rec.meta["outputs"] for rec in records.values()])
@@ -89,7 +125,7 @@ def main(argv=None) -> int:
     ])
     output_vs_target_figure(
         outputs, targets, dt=cfg.dt, labels=labels, threshold=cfg.threshold,
-        name="pc_output_vs_target", out_dir=out_dir,
+        name=f"{prefix}_output_vs_target", out_dir=out_dir,
     )
 
     prior_color = {"short": np.array([0.85, 0.3, 0.3, 1.0]), "long": np.array([0.2, 0.4, 0.8, 1.0])}
@@ -98,7 +134,7 @@ def main(argv=None) -> int:
     linestyle_by = {cond.label: effector_ls[cond.effector] for cond in records}
     pca_trajectories_figure(
         states_by_condition, out_dir=out_dir,
-        name="pc_pca_trajectories", color_by=color_by, linestyle_by=linestyle_by,
+        name=f"{prefix}_pca_trajectories", color_by=color_by, linestyle_by=linestyle_by,
     )
 
     print(f"[plot_pc_activity] {len(records)} conditions; figures written to {out_dir}")

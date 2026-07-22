@@ -1,2 +1,0 @@
-mkdir -p failed for path /afs/glue.umd.edu/home/glue/v/g/vguigon/home/.config/matplotlib: [Errno 13] Permission denied: '/afs/glue.umd.edu/home/glue/v/g/vguigon/home/.config/matplotlib'
-Matplotlib created a temporary cache directory at /tmp/matplotlib-bexuw0p2 because there was an issue with the default path (/afs/glue.umd.edu/home/glue/v/g/vguigon/home/.config/matplotlib); it is highly recommended to set the MPLCONFIGDIR environment variable to a writable directory, in particular to speed up the import of Matplotlib and to better support multiprocessing.

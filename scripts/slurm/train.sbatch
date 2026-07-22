@@ -59,6 +59,7 @@ TASK_SOURCE="${TASK_SOURCE:-}"
 RUN_DIR="${RUN_DIR:-results/runs}"
 CONFIG="${CONFIG:-}"
 PC_INFERENCE_STEPS="${PC_INFERENCE_STEPS:-}"
+ACTIVATION_STORE="${ACTIVATION_STORE:-}"
 
 module use /software/sld/modulefiles
 module load python/3.11.10
@@ -80,6 +81,9 @@ if [ -n "$TASK_SOURCE" ]; then
 fi
 if [ -n "$PC_INFERENCE_STEPS" ]; then
   cmd+=(--pc-inference-steps "$PC_INFERENCE_STEPS")
+fi
+if [ -n "$ACTIVATION_STORE" ]; then
+  cmd+=(--activation-store "$ACTIVATION_STORE")
 fi
 
 echo "[slurm] host=$(hostname) job=${SLURM_JOB_ID:-none} array_task=${SLURM_ARRAY_TASK_ID:-none} git=$GIT_SHA"

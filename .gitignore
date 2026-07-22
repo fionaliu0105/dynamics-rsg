@@ -11,19 +11,35 @@ SUPLEX.md
 .pytest_tmp/
 results/checkpoints/
 results/**/checkpoints/
-results/**/activations/
+# Legacy nested-under-run-dir activation layout (e.g. results/runs/pc/seed_0000/
+# activations/), NOT the top-level results/activations/ store, which is pushed
+# on purpose below. Scoped under runs*/ specifically — "**" matches zero path
+# segments, so an unscoped "results/**/activations/" would also match (and
+# silently re-ignore) the top-level store itself.
+results/runs*/**/activations/
 results/**/*.pt
 results/**/*.pth
 results/**/*.ckpt
 
 # Regenerable run artifacts. Stage 0 rebuilds data/; Stage 1-3 rebuild results/.
 # results/figures/ is deliberately NOT ignored — curated figures are committed.
-# Wildcard (not just "results/runs/") so ad hoc validation dirs like results/runs_v2/
-# are covered too, without needing a .gitignore edit every time one is created.
+# results/runs/ and results/activations/ (the live 10-seed sweep) are pushed on
+# purpose (team hand-off) — checkpoints (.pt) inside them still get excluded via
+# the results/**/*.pt rule above regardless. Ad hoc one-off dirs outside the live
+# tree (results/runs_v5/ etc.) still need routing into results/archive/ (ignored
+# below) rather than relying on a blanket runs*/ pattern like before.
 data/raw/
 data/processed/
-results/runs*/
-results/activations/
-results/activations_*/
 results/rsa/
 results/idsa/
+# Cluster stdout/stderr per array task -- operational debug output, not a
+# result, and specific to whoever's cluster account/paths ran the job.
+results/slurm_logs/
+
+# results/archive/ holds superseded pre-cluster pilot runs, kept locally for the
+# record but not meant to be pushed. Note: results/archive/{bptt_activity_demo,
+# bptt_pilot_all,pc_activity,pc_activity_pre_merge_2026-07-21} were already
+# tracked (git-mv'd from results/figures/, which is deliberately not ignored)
+# before this rule was added — gitignore doesn't untrack already-tracked files,
+# so those stay tracked unless explicitly `git rm --cached`.
+results/archive/

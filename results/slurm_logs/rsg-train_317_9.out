@@ -1,3 +1,0 @@
-[slurm] host=sld.umd.edu job=317 array_task=9 git=cc2e6ec
-[slurm] >>> /data/sld/homes/vguigon/dynamics-rsg/.venv/bin/python scripts/train.py --seed 9 --regime reduced --rule bptt --run-dir results/runs
-[train] rule=bptt seed=9 task_source=neurogym regime dt=5.0 N=160 pc_inference_steps=20 -> results/runs/bptt/seed_0009
