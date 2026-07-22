@@ -22,9 +22,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import numpy as np
 
-from src.conditions import CONDITIONS
+from src.conditions import CONDITIONS, Condition
 from src.store import ActivationStore
-from src.task.rsg import trial_target_and_mask
+from src.task.rsg import ramp
 from src.training.config import Config
 from src.viz.figures import (
     output_vs_target_figure,
@@ -32,6 +32,21 @@ from src.viz.figures import (
     training_loss_figure,
     unit_activity_figure,
 )
+
+
+def _reconstruct_target(cfg: Config, condition: Condition, set_step: int) -> np.ndarray:
+    """Rebuild the target ramp for one condition, matching ``src.task.rsg._build``.
+
+    The activation store saves the produced output but not the target trace, so
+    this mirrors the trainer's own target construction (ramp-to-threshold from
+    Set onset, held through ``prod_hold``) rather than re-deriving it differently.
+    """
+    ts_steps = int(round(condition.ts / cfg.dt))
+    prod_end = min(set_step + ts_steps + cfg.prod_hold_step, cfg.n_steps)
+    target = np.zeros(cfg.n_steps, dtype=np.float32)
+    rel = np.arange(prod_end - set_step)
+    target[set_step:prod_end] = ramp(rel, ts_steps, cfg)
+    return target
 
 
 def main(argv=None) -> int:
@@ -69,11 +84,9 @@ def main(argv=None) -> int:
     )
 
     outputs = np.stack([rec.meta["outputs"] for rec in records.values()])
-    targets = []
-    for cond, rec in records.items():
-        target, _ = trial_target_and_mask(cfg, cond, rec.meta["set_step"])
-        targets.append(target)
-    targets = np.stack(targets)
+    targets = np.stack([
+        _reconstruct_target(cfg, cond, rec.meta["set_step"]) for cond, rec in records.items()
+    ])
     output_vs_target_figure(
         outputs, targets, dt=cfg.dt, labels=labels, threshold=cfg.threshold,
         name="pc_output_vs_target", out_dir=out_dir,
