@@ -124,3 +124,45 @@ if __name__ == "__main__":
     test_energy_descends_and_updates_are_finite()
     test_toy_loss_decreases_and_alignment_is_reported()
     print("PC-A deterministic checks passed")
+
+
+def test_updates_are_normalized_and_recurrent_weights_train():
+    """Guard the two defects that stopped PC learning anything recurrent.
+
+    Before the fix ``_local_updates`` returned raw *sums* over batch x time with no
+    normalization and no ``grad_clip``, so at ``cfg.lr`` the readout exploded and the
+    run went non-finite within ~9 iterations. Normalizing alone is not enough: PC's
+    recurrent update is orders of magnitude smaller than its readout update, so under
+    plain SGD ``J`` stays frozen while the loss still falls -- which a loss-only test
+    happily passes. Both assertions below fail on the pre-fix implementation.
+    """
+    cfg, inputs, target, mask = _toy_batch()
+    torch.manual_seed(0)
+    model = PCRNN(cfg)
+
+    # 1. Updates must be on the BPTT arm's scale (a masked mean), not a raw sum.
+    with torch.no_grad():
+        model.w_o.normal_(0.0, 0.05)
+    updates = model.infer_and_update(inputs, target, mask, apply_update=False)["updates"]
+    assert updates["w_o"].norm() < 10.0, (
+        f"readout update looks unnormalized: {updates['w_o'].norm():.3g}"
+    )
+
+    # 2. The recurrent matrix must actually move over training.
+    torch.manual_seed(0)
+    model = PCRNN(cfg)
+    initial_J = model.J.detach().clone()
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
+    losses = []
+    for _ in range(40):
+        result = model.infer_and_update(inputs, target, mask, apply_update=False)
+        for name, parameter in model.named_parameters():
+            parameter.grad = result["updates"][name].clone()
+        optimizer.step()
+        optimizer.zero_grad(set_to_none=False)
+        losses.append(result["loss"])
+
+    assert all(torch.isfinite(torch.tensor(losses))), "PC training went non-finite"
+    assert losses[-1] < losses[0] * 0.7, (losses[0], losses[-1])
+    moved = (model.J.detach() - initial_J).norm() / initial_J.norm()
+    assert moved > 1e-3, f"recurrent weights effectively frozen: relative move {moved:.2e}"

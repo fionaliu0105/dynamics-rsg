@@ -152,9 +152,12 @@ rule-vs-rule check (JSON only).
 | --- | --- | --- | --- |
 | reduced, BPTT | 0.13 | **6.4 min** | `n_iter=3000`, N=160, T=600 |
 | faithful, BPTT | 1.27 | **2.1 h** | `n_iter=6000`, N=200, T=3000 |
-| reduced, PC `steps=5` | 0.20 | 10 min | 1.6× BPTT |
+| reduced, PC `steps=5` | 0.19 | 9.4 min | 1.5× BPTT |
 | reduced, PC `steps=20` | 0.60 | 30 min | 4.7× BPTT |
 | reduced, PC `steps=100` | 5.88 | **4.9 h** | 45.6× BPTT |
+
+PC rows are for the vectorized relaxation that shipped (see "PC fix"); the fix changed
+update *scale*, not the relaxation cost, so these still hold.
 
 `pc_inference_steps` is the dominant cost driver, and it scales worse than linearly.
 The full planned design (2 rules × 10 seeds × PC sweep 5/20/100) is ~57 h sequential in
@@ -185,46 +188,48 @@ so run them in parallel (`OMP_NUM_THREADS=2`, ~5–6 concurrent on 12 cores).
 
    ### PC fix (2026-07-21)
 
-   Ported against the reference the project cites,
+   Checked against the reference the project cites,
    [Millidge's `rnn.py`](https://github.com/BerenMillidge/PredictiveCodingBackprop/blob/master/rnn.py).
-   The root cause was the **relaxation iteration scheme**, not the update equations —
-   `_value_gradient` was already the correct gradient of the stated energy.
+   The root cause was **purely one of scale**. The update equations were already right:
+   `_value_gradient` is the correct gradient of the stated energy, and its direction
+   agrees with autograd (cosine to the BPTT gradient ≈ 0.71 for `J`, exactly 1.000 for
+   the readout). Nothing needed re-deriving.
 
-   - **Reverse-time relaxation** (`PCRNN._relax`). The old loop relaxed every timestep
-     *simultaneously* (Jacobi), which moves readout error backward exactly one step per
-     inference step — so with `pc_inference_steps=20` over `T=600`, error never reached
-     early values, the temporal error stayed at its initial zero, and `dJ` was starved.
-     Millidge visits timesteps in **reverse order**, so each value node sees the
-     already-updated error of the step after it and error crosses the whole sequence in
-     one pass. Unlike Millidge we recompute predictions from current values rather than
-     holding them at the forward sweep (his `fixed_predictions=True`): with fixed
-     predictions the temporal term is pinned at its minimum, energy cannot descend, and
-     the PC-A gate becomes unfalsifiable.
    - **Update rescaling** (`PCRNN._rescale_updates`): normalize by `mask.sum()` and apply
-     `cfg.grad_clip`, matching `masked_mse` and the clip the BPTT arm already had.
+     `cfg.grad_clip`, matching `masked_mse` and the clip the BPTT arm already had. This
+     is what stops the divergence — unnormalized, the readout update has norm ~31 on the
+     toy config where the normalized one is ~0.03.
+   - **Optimizer parity** (`trainer.py`, `cfg.pc_optimizer`, default `"adam"`): PC's
+     local updates are handed to the same Adam the BPTT arm uses instead of being applied
+     as plain SGD inside the model. This is what unfreezes the recurrent matrix. PC's
+     recurrent update is orders of magnitude smaller than its readout update, so under
+     SGD `J` moves by a relative `1.6e-05` while the loss still falls — the failure mode
+     a loss-only test cannot see. Under Adam `|ΔJ|` reaches 2.9 over 100 iterations.
    - **`_metrics` sign fix**: `updates` are *gradients* (applied as `-lr * update`), so
      the reference is `+bptt_grad`. It previously negated it and reported an
      exactly-correct readout update as `cosine = -1.000`.
-   - **Optimizer parity** (`trainer.py`): **both arms now use Adam.** PC's local updates
-     are handed to the optimizer instead of applied as plain SGD inside the model.
+   - **Regression test** (`tests/test_pc_rnn.py::test_updates_are_normalized_and_recurrent_weights_train`):
+     asserts update magnitude *and* that `J` actually moves. Verified to fail on the
+     pre-fix implementation on both counts.
 
-   *Measured after the fix* (reduced, seed 0). Energy descends monotonically and
-   alignment with the true BPTT gradient rises with inference steps — the Millidge &
-   Bogacz prediction, now observable rather than assumed:
+   **What was tried and rejected.** Millidge relaxes value nodes in *reverse time order*
+   (Gauss-Seidel) so readout error propagates backward across the sequence, and the
+   obvious hypothesis was that our simultaneous (Jacobi) relaxation starved `dJ` of
+   long-range credit. **It does not** — implemented and measured, the two schemes are
+   equivalent (cosine to BPTT gradient 0.72 vs 0.71; after 100 iterations `|ΔJ|` 2.83 vs
+   2.90, loss 0.066 vs 0.067) while the reverse sweep costs **4.7× more wall-clock** as a
+   Python loop over `T`. The reason the ordering does not matter here: Millidge's
+   char-prediction task scores only the sequence end, whereas RSG supervises the entire
+   production epoch, so every value node already gets direct output-error pressure and
+   there is no long-range credit to assign. The vectorized form is kept, and `_relax`
+   documents this so nobody re-litigates it.
 
-   | `pc_inference_steps` | energy during relaxation | cosine(PC update, BPTT grad) for `J` |
-   | --- | --- | --- |
-   | 1 | 252.5 → 242.7 | 0.565 |
-   | 5 | 252.5 → 216.5 | 0.589 |
-   | 20 | 252.5 → 183.0 | 0.665 |
-   | 50 | 252.5 → 163.7 | 0.754 |
-
-   `w_o`/`c_z` align at 1.000 (exact). Over 150 iterations the recurrent matrix now
-   moves: `|ΔJ| = 6.31` under Adam versus `0.0002` under plain SGD (`|J| = 12.67`), and
-   loss falls 0.19 → 0.07. **The optimizer choice is load-bearing, and it is a scientific
-   decision worth a second opinion** — holding Adam fixed across both arms is what keeps
-   a PC-vs-BPTT difference attributable to the rule rather than to Adam-vs-SGD, but it
-   does mean PC is not the pure local-SGD rule Millidge runs.
+   **The optimizer choice is a scientific decision, not a implementation detail, and it
+   deserves a second opinion.** Holding Adam fixed across both arms is what keeps a
+   PC-vs-BPTT difference attributable to the rule rather than to Adam-vs-SGD, but it does
+   mean PC is not the pure local-SGD rule Millidge runs, and it sits in tension with
+   AGENTS.md decision 1 ("PC as the optimizer"). Set `pc_optimizer: sgd` in a config to
+   run the alternative without editing code.
 
 2. **`tp` is undefined for most trained nets, so the behavioral covariate is dead.**
    `src/task/rsg.py:81` builds the target as `cfg.threshold * frac**cfg.ramp_a` with

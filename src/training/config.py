@@ -79,6 +79,12 @@ class Config:
     # --- predictive coding (ignored when rule == "bptt") ------------------------
     pc_inference_steps: int = 20              # value-relaxation steps; SWEEP THIS
     pc_inference_lr: float = 0.1              # latent-state update rate
+    # How PC's local updates become a step. "adam" matches the BPTT arm, so a
+    # PC-vs-BPTT difference is attributable to the rule rather than to the optimizer;
+    # "sgd" is the pure local rule Millidge runs, under which PC's recurrent update is
+    # ~1e4 smaller than its readout update and J stays effectively frozen. This is a
+    # scientific choice, so it is a config knob rather than a constant.
+    pc_optimizer: str = "adam"                # "adam" | "sgd"
 
     # --- sweep bookkeeping ------------------------------------------------------
     n_seeds: int = 10                         # default seeds per (rule x sweep-point)
