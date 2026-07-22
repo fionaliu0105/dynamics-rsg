@@ -25,8 +25,13 @@ from src.training.config import Config
 def build_config(args) -> Config:
     if args.config:
         cfg = Config.from_yaml(args.config)
+        overrides = {}
         if args.seed is not None:
-            cfg = Config.from_dict({**cfg.to_dict(), "seed": args.seed})
+            overrides["seed"] = args.seed
+        if args.task_source is not None:
+            overrides["task_source"] = args.task_source
+        if overrides:
+            cfg = Config.from_dict({**cfg.to_dict(), **overrides})
         return cfg
     make = Config.faithful if args.regime == "faithful" else Config.reduced
     overrides = {}
@@ -34,6 +39,8 @@ def build_config(args) -> Config:
         overrides["rule"] = args.rule
     if args.seed is not None:
         overrides["seed"] = args.seed
+    if args.task_source is not None:
+        overrides["task_source"] = args.task_source
     return make(**overrides)
 
 
@@ -43,20 +50,33 @@ def main(argv=None) -> int:
     p.add_argument("--regime", choices=["reduced", "faithful"], default="reduced")
     p.add_argument("--rule", choices=["bptt", "pc"])
     p.add_argument("--seed", type=int)
+    p.add_argument("--task-source", choices=["neurogym", "standalone"],
+                   help="task data generator (default from config: neurogym)")
     p.add_argument("--run-dir", type=str, default="results/runs")
+    p.add_argument(
+        "--activation-store",
+        type=str,
+        default=None,
+        help="shared ActivationStore root (default: sibling 'activations' of --run-dir)",
+    )
     p.add_argument("--dry-run", action="store_true", help="build+print config, don't train")
     args = p.parse_args(argv)
 
     cfg = build_config(args)
     run_dir = Path(args.run_dir) / cfg.rule / f"seed_{cfg.seed:04d}"
-    print(f"[train] rule={cfg.rule} seed={cfg.seed} regime dt={cfg.dt} N={cfg.N} "
-          f"pc_inference_steps={cfg.pc_inference_steps} -> {run_dir}")
+    print(f"[train] rule={cfg.rule} seed={cfg.seed} task_source={cfg.task_source} "
+          f"regime dt={cfg.dt} N={cfg.N} pc_inference_steps={cfg.pc_inference_steps} -> {run_dir}")
     if args.dry_run:
         print("[train] --dry-run: config built OK, not training.")
         return 0
 
     from src.training.trainer import train_one_seed  # lazy: needs torch
-    train_one_seed(cfg, run_dir)
+    activation_store = (
+        Path(args.activation_store)
+        if args.activation_store
+        else Path(args.run_dir).parent / "activations"
+    )
+    train_one_seed(cfg, run_dir, activation_store_root=activation_store)
     return 0
 
 

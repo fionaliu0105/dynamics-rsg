@@ -19,7 +19,7 @@ each track fills in its panel. Uses matplotlib (present) + numpy.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, Mapping, Sequence
+from typing import Dict, Mapping, Optional, Sequence, Tuple
 
 import matplotlib
 
@@ -78,12 +78,16 @@ def behavior_panel(eval_records: Sequence[dict], rule: str, seed: int, out_dir: 
 def summary_distance_figure(
     distances: Dict[str, Dict[str, Sequence[float]]],
     out_dir: Path = RESULTS_DIR,
+    ceilings: Optional[Mapping[str, Tuple[float, float]]] = None,
 ) -> Path:
     """THE headline figure: distance-to-DMFC per rule, per metric, with seed spread.
 
     Args:
         distances: ``{metric: {rule: [per-seed distances]}}``, e.g.
             ``{"RSA": {"bptt": [...], "pc": [...]}, "iDSA": {...}}``.
+        ceilings: optional ``{metric: (lower, upper)}`` neural noise-ceiling band, in
+            the SAME distance units, drawn as a shaded span per metric panel (from
+            ``src.compare.rsa.noise_ceiling``). Omitted metrics get no band.
 
     Draws mean +/- spread over seeds per rule, grouped by metric. This reads saved
     metrics only. Reusable as-is; tracks feed it their per-seed distance arrays.
@@ -92,6 +96,9 @@ def summary_distance_figure(
     rules = sorted({r for m in distances.values() for r in m})
     fig, axes = plt.subplots(1, len(metrics), figsize=(5 * len(metrics), 4), squeeze=False)
     for ax, metric in zip(axes[0], metrics):
+        if ceilings and metric in ceilings:
+            lo, hi = ceilings[metric]
+            ax.axhspan(lo, hi, color="0.8", alpha=0.6, zorder=0, label="noise ceiling")
         for i, rule in enumerate(rules):
             vals = np.asarray(distances[metric].get(rule, []), dtype=float)
             if vals.size:
@@ -101,6 +108,8 @@ def summary_distance_figure(
         ax.set_xticklabels(rules)
         ax.set_title(f"{metric}: distance to DMFC")
         ax.set_ylabel("distance (per-seed spread)")
+        if ceilings and metric in ceilings:
+            ax.legend(fontsize=8)
     return savefig(fig, "summary_distance_to_dmfc", out_dir)
 
 
@@ -117,6 +126,88 @@ def training_loss_figure(
     ax.set_title("training loss")
     return savefig(fig, name, out_dir)
 
+# --- Behavior-track panel (Fig 1E, plan 2.2 / Step D) --------------------------
+# Reads already-measured per-condition behavior (ts, tp, prior) — from the store's meta
+# or an aggregated metrics table — and draws the tp-vs-ts regression per prior. It never
+# runs a model; tp comes from src.behavior.slope on stored outputs.
+
+def behavior_slope_figure(
+    ts,
+    tp,
+    prior_labels,
+    *,
+    title: str = "Behavior: tp vs ts (Fig 1E)",
+    name: str = "behavior_tp_vs_ts",
+    out_dir: Path = RESULTS_DIR,
+) -> Path:
+    """Fig 1E: produced interval ``tp`` vs sample interval ``ts``, per prior, with the
+    fitted tp-vs-ts slope — the Bayesian-bias signature (slope in (0, 1); Long flatter).
+
+    Args:
+        ts, tp, prior_labels: equal-length saved metrics, one entry per stored
+            (condition[, seed]). ``tp`` may contain ``NaN`` (no threshold crossing);
+            NaN points are dropped from the fit.
+
+    The reported slope per prior comes from :func:`src.behavior.slope.slopes_by_prior`
+    (the canonical metric), so the drawn line and the legend agree. Reads metrics only —
+    never retrains or re-extracts.
+    """
+    from src.behavior.slope import slopes_by_prior  # local: keep module import-light
+
+    ts = np.asarray(ts, dtype=float)
+    tp = np.asarray(tp, dtype=float)
+    labels = np.asarray(prior_labels)
+    slopes = slopes_by_prior(ts, tp, labels)
+
+    fig, ax = plt.subplots(figsize=(5, 4))
+    color = {"short": "tab:blue", "long": "tab:red"}
+    finite_ts = ts[np.isfinite(ts)]
+    if finite_ts.size:
+        lo, hi = finite_ts.min(), finite_ts.max()
+        ax.plot([lo, hi], [lo, hi], ls=":", c="gray", lw=1, label="unity (slope 1)")
+    for prior in dict.fromkeys(labels.tolist()):
+        m = (labels == prior) & np.isfinite(tp)
+        if not m.any():
+            continue
+        c = color.get(prior)
+        tsg, tpg, s = ts[m], tp[m], slopes[prior]
+        ax.scatter(tsg, tpg, s=28, c=c, edgecolors="k", linewidths=0.4,
+                   label=f"{prior} (slope={s:.2f})")
+        if np.isfinite(s):
+            b = tpg.mean() - s * tsg.mean()          # OLS line through the centroid
+            xs = np.array([tsg.min(), tsg.max()])
+            ax.plot(xs, s * xs + b, c=c, lw=2)
+    ax.set_xlabel("sample interval ts (ms)")
+    ax.set_ylabel("produced interval tp (ms)")
+    ax.set_title(title)
+    ax.legend(fontsize=8, loc="best")
+    return savefig(fig, name, out_dir)
+
+
+# --- RSA-track panels (plan 3.3) -----------------------------------------------
+# These read an already-computed RDM (20x20, canonical condition order) and write a
+# file. They never build the RDM or re-extract activity — that is src.compare.rsa.
+
+def rdm_heatmap(rdm, name: str = "rdm_heatmap", out_dir: Path = RESULTS_DIR) -> Path:
+    """Heatmap of a 20x20 RDM in the canonical condition order.
+
+    ``rdm``: [n_cond, n_cond] dissimilarity matrix from src.compare.rsa.build_rdm.
+    Ticks are labelled with the canonical Condition labels so the prior/effector/ts
+    structure is legible.
+    """
+    from src.conditions import CONDITIONS  # local import keeps this module import-light
+
+    rdm = np.asarray(rdm, dtype=float)
+    labels = [c.label for c in CONDITIONS]
+    fig, ax = plt.subplots(figsize=(7, 6))
+    im = ax.imshow(rdm, cmap="viridis", aspect="equal")
+    ax.set_xticks(range(len(labels)))
+    ax.set_yticks(range(len(labels)))
+    ax.set_xticklabels(labels, rotation=90, fontsize=6)
+    ax.set_yticklabels(labels, fontsize=6)
+    ax.set_title("RDM (dissimilarity)")
+    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="dissimilarity")
+    return savefig(fig, name, out_dir)
 
 def unit_activity_figure(
     states: np.ndarray,

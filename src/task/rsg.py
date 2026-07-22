@@ -1,45 +1,56 @@
 """Two-prior Ready-Set-Go task generator.  [MEMBER TRACK: Task & behavior — plan 1.A]
 
-WHAT TO BUILD
-    Extend NeuroGym's ``ReadySetGo-v0`` (single-prior, no context input) into the
-    two-prior task the animal actually did. A trial's input has THREE channels
-    (``Model.N_IN == 3``):
-        0. Ready/Set pulse channel  (two ``pulse_height`` pulses ``ts`` apart)
-        1. prior-context channel    (tonic ``cfg.prior_context[prior]``)
-        2. effector-context channel (tonic ``cfg.effector_context[effector]``)
-    and a target ramp that reaches ``cfg.threshold`` at ``ts`` after Set (Eq. 9).
+A trial's input has THREE channels (``Model.N_IN == 3``):
+    0. Ready/Set pulse channel  (two ``pulse_height`` pulses ``t_m`` apart)
+    1. prior-context channel    (tonic ``cfg.prior_context[prior]``)
+    2. effector-context channel (tonic ``cfg.effector_context[effector]``)
+and a target ramp that reaches ``cfg.threshold`` at ``ts`` after Set (Eq. 9).
 
-    Draw conditions from :data:`src.conditions.CONDITIONS`. During TRAINING, jitter
-    the Ready-Set separation with scalar noise ``t_m ~ N(ts, ts * cfg.w_m)`` while
-    timing the target to the TRUE ``ts`` — that averaging is what bends the learned
-    mapping toward the prior mean (the Bayesian bias). See the reconstructed code in
-    the planning doc's Details tab for a concrete (UNVALIDATED) starting point.
+Conditions are drawn from :data:`src.conditions.CONDITIONS`. During TRAINING the
+Ready-Set separation is jittered with scalar noise ``t_m ~ N(ts, ts * cfg.w_m)`` while
+the target stays timed to the TRUE ``ts`` — that averaging is what bends the learned
+mapping toward the prior mean (the Bayesian bias).
+
+IMPLEMENTATION NOTE — standalone generator (Blocker A fallback, NOT the NeuroGym subclass)
+    AGENTS/plan Decision 1 want ``TwoPriorRSG(neurogym.envs.ReadySetGo)`` ("NeuroGym is
+    the task source of truth"). neurogym cannot be installed/tested in this env (py3.9;
+    neurogym 2.3.1 needs py>=3.10 + numpy 2, which fights torch/the analysis stack — see
+    PLAN_TRACK1.md Blocker A). This module is the documented, reversible fallback: a
+    self-contained numpy generator that mirrors ReadySetGo's
+    ``fixation->ready->measure->set->production`` timing behind the SAME
+    ``make_batch``/``build_trial`` interface. Once the env spike resolves, the NeuroGym
+    subclass swaps in here with no change to any caller.
+
+CORRESPONDENCE TO NEUROGYM ``ReadySetGo`` (what we preserve vs. extend)
+    The period skeleton is mirrored 1:1 — ``fixation -> ready -> measure -> set ->
+    production`` — with matched timing: the pre-Ready dead time is neurogym's 100 ms
+    ``fixation`` (``cfg.ready_onset``); ``cfg.pulse_width`` (83 ms) is its
+    ``ready``/``set`` period duration; and the Ready->Set *onset* gap is its
+    ``measure`` (= ts) — exactly how neurogym stacks ``measure`` from Ready onset.
+    Deliberate two-prior extensions (AGENTS.md "extends or wraps"): the 3 obs
+    channels are re-mapped from ``{fixation, ready, set}`` to ``{Ready/Set pulse,
+    prior-context, effector-context}``; ``measure`` is a discrete two-prior ``ts``
+    (passed in via ``make_batch`` with Bayesian jitter), not ``U(800, 1500)``; and
+    the target is a continuous ramp-to-threshold, not neurogym's single go-impulse.
+    ``tp`` is timed from Set *onset* (ramp crosses at ``set_step + ts``); neurogym
+    places its go-impulse ts after Set *end* — a constant one-pulse offset, kept at
+    onset here to match the RSG paper and ``src/behavior/slope.py``.
 
 INTERFACE (what the trainer and store rely on)
-    make_batch(cfg, batch, rng) -> Batch with:
-        inputs  : [batch, time, 3]
-        target  : [batch, time]      the ramp (BPTT loss target)
-        mask    : [batch, time]      1.0 inside the production epoch, else 0.0
-        conditions : list[Condition] length `batch`
-    build_trial(cfg, condition, jitter=False) -> single-condition inputs (+ Set step)
-        for evaluation / storing per-condition activations.
+    make_batch(cfg, batch, rng) -> Batch(inputs[B,T,3], target[B,T], mask[B,T], conditions)
+    build_trial(cfg, condition, jitter=False) -> (inputs[1,T,3], set_step:int)
 
-DEFINITION OF DONE (plan 1.A check)
-    Input carries all three channels; every trial carries ts/prior/effector; the
-    dt you get matches cfg.dt; a batch's shapes are [batch, cfg.n_steps, 3].
-
-REFERENCE
-    NeuroGym: https://github.com/neurogym/neurogym  ·  Sohn et al. 2019 STAR Methods.
+Numpy at the boundary — no torch import here; the trainer moves arrays to torch.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional
 
 import numpy as np
 
-from src.conditions import CONDITIONS, Condition
+from src.conditions import CONDITIONS, N_CONDITIONS, Condition
 from src.training.config import Config
 
 
@@ -53,119 +64,87 @@ class Batch:
     conditions: List[Condition]
 
 
-def make_batch(cfg: Config, batch: int, rng: np.random.Generator) -> Batch:
-    """Sample a training batch with scalar measurement noise on the Ready-Set gap.
+def ramp(t_rel_steps, ts_steps: int, cfg: Config) -> np.ndarray:
+    """Target ramp value(s) at ``t_rel_steps`` steps after Set.
 
-    The Ready/Set input gap is jittered as ``t_m ~ N(ts, ts * cfg.w_m)`` while
-    the production target remains timed to the true ``ts`` after the jittered Set.
-    Keeping the jitter in the input, not the target, is the reconstruction's
-    proposed Bayesian-bias mechanism and is deliberately limited to training.
+    Monotone, **crossing ``cfg.threshold`` at exactly ``t_rel_steps == ts_steps``**, then
+    holding ``cfg.threshold`` (``np.clip(.., 0, 1)`` caps the fraction at 1, so the hold
+    falls out of the same formula). Crossing-at-``ts`` fixes the tp-vs-ts baseline slope
+    at 1 so the measured Bayesian bias is not confounded by ramp geometry.
+
+    TODO(task-track): the exact Eq.9 form and the role of ``cfg.ramp_A`` are UNVERIFIED
+    (PLAN_TRACK1.md open item). This uses the "reaches threshold at ts" interpretation
+    with shape exponent ``cfg.ramp_a``; ``ramp_A`` is intentionally unused until
+    reconciled against the reconstruction.
     """
-    choices = rng.integers(0, len(CONDITIONS), size=batch)
-    inputs = np.zeros((batch, cfg.n_steps, 3), dtype=np.float32)
-    target = np.zeros((batch, cfg.n_steps), dtype=np.float32)
-    mask = np.zeros((batch, cfg.n_steps), dtype=np.float32)
-    conditions: List[Condition] = []
+    frac = np.clip(np.asarray(t_rel_steps, dtype=float) / float(ts_steps), 0.0, 1.0)
+    return (cfg.threshold * frac ** cfg.ramp_a).astype(np.float32)
 
-    for row, idx in enumerate(choices):
-        condition = CONDITIONS[int(idx)]
-        measured_ts = _jittered_ts_ms(cfg, condition.ts, rng)
-        set_step = _fill_trial_arrays(cfg, condition, measured_ts, inputs[row], target[row], mask[row])
-        if not 0 <= set_step < cfg.n_steps:
-            raise ValueError(f"set_step={set_step} outside trial for {condition}")
-        conditions.append(condition)
 
+def _measurement_steps(cfg: Config, ts: int, jitter: bool, rng) -> int:
+    """Ready->Set gap in steps. Jitter draws ``t_m ~ N(ts, ts*cfg.w_m)`` (the noisy
+    measurement); no-jitter uses the true ``ts``. Clipped so the whole production epoch
+    still fits the fixed ``cfg.n_steps`` canvas (PLAN_TRACK1.md Blocker B expects the
+    generator to clip the rare far-tail draw)."""
+    t_m = rng.normal(ts, ts * cfg.w_m) if jitter else float(ts)
+    step = int(round(t_m / cfg.dt))
+    ts_steps = int(round(ts / cfg.dt))
+    max_step = cfg.n_steps - cfg.ready_onset_step - ts_steps - cfg.prod_hold_step - 1
+    return int(np.clip(step, 1, max(1, max_step)))
+
+
+def _build(cfg: Config, condition: Condition, jitter: bool, rng=None):
+    """Render one trial onto the fixed canvas. Returns (inputs[T,3], target[T], mask[T],
+    set_step). Ready is fixed at ``ready_onset_step``; Set is at ``+t_m`` (jittered);
+    the target ramp is always timed to the TRUE ts from Set."""
+    T = cfg.n_steps
+    pw = cfg.pulse_width_step
+    r0 = cfg.ready_onset_step
+    ts_steps = int(round(condition.ts / cfg.dt))
+
+    inputs = np.zeros((T, 3), dtype=np.float32)
+    inputs[:, 1] = cfg.prior_context[condition.prior]        # tonic prior context
+    inputs[:, 2] = cfg.effector_context[condition.effector]  # tonic effector context
+
+    inputs[r0:r0 + pw, 0] = cfg.pulse_height                 # Ready pulse (fixed onset)
+    m_steps = _measurement_steps(cfg, condition.ts, jitter, rng)
+    set_step = r0 + m_steps
+    inputs[set_step:set_step + pw, 0] = cfg.pulse_height     # Set pulse (jittered gap)
+
+    target = np.zeros(T, dtype=np.float32)
+    mask = np.zeros(T, dtype=np.float32)
+    prod_end = min(set_step + ts_steps + cfg.prod_hold_step, T)
+    rel = np.arange(prod_end - set_step)
+    target[set_step:prod_end] = ramp(rel, ts_steps, cfg)     # ramp-to-threshold + hold
+    mask[set_step:prod_end] = 1.0                            # supervise the production epoch
+    return inputs, target, mask, set_step
+
+
+def make_batch(cfg: Config, batch: int, rng: np.random.Generator) -> Batch:
+    """Sample a training batch (jittered Ready-Set gap, target timed to the true ts).
+
+    ``make_batch`` is the SOLE condition sampler: it draws conditions from ``CONDITIONS``
+    via ``rng`` and renders each with jitter. Deterministic given ``rng``.
+    """
+    idxs = rng.integers(0, N_CONDITIONS, size=batch)
+    conditions = [CONDITIONS[int(k)] for k in idxs]
+
+    inputs = np.empty((batch, cfg.n_steps, 3), dtype=np.float32)
+    target = np.empty((batch, cfg.n_steps), dtype=np.float32)
+    mask = np.empty((batch, cfg.n_steps), dtype=np.float32)
+    for i, cond in enumerate(conditions):
+        inputs[i], target[i], mask[i], _ = _build(cfg, cond, jitter=True, rng=rng)
     return Batch(inputs=inputs, target=target, mask=mask, conditions=conditions)
 
 
-def build_trial(
-    cfg: Config,
-    condition: Condition,
-    jitter: bool = False,
-    rng: np.random.Generator | None = None,
-):
+def build_trial(cfg: Config, condition: Condition, jitter: bool = False):
     """Build a single-condition input (no jitter by default) for eval/storage.
 
-    Returns ``(inputs [1, time, 3], set_step int)``. Evaluation/storage callers
-    should keep the default ``jitter=False`` so activations are on the canonical
-    condition time base.
+    Returns ``(inputs [1, time, 3], set_step int)``. ``jitter=False`` places Set at the
+    true ``ts`` after Ready (the deterministic eval/store path the trainer uses with noise
+    off); ``jitter=True`` uses a fresh, non-reproducible RNG (the reproducible jittered
+    path is ``make_batch``, which threads the caller's ``rng``).
     """
-    inputs = np.zeros((1, cfg.n_steps, 3), dtype=np.float32)
-    target = np.zeros((1, cfg.n_steps), dtype=np.float32)
-    mask = np.zeros((1, cfg.n_steps), dtype=np.float32)
-    if jitter:
-        if rng is None:
-            raise ValueError("jitter=True requires an rng for reproducibility")
-        measured_ts = _jittered_ts_ms(cfg, condition.ts, rng)
-    else:
-        measured_ts = float(condition.ts)
-    set_step = _fill_trial_arrays(cfg, condition, measured_ts, inputs[0], target[0], mask[0])
-    return inputs, set_step
-
-
-def trial_target_and_mask(cfg: Config, condition: Condition, set_step: int) -> tuple[np.ndarray, np.ndarray]:
-    """Return the deterministic target and mask for an already-built trial.
-
-    This is used by tests and diagnostics; training uses the same private helper
-    through :func:`make_batch`.
-    """
-    target = np.zeros((cfg.n_steps,), dtype=np.float32)
-    mask = np.zeros((cfg.n_steps,), dtype=np.float32)
-    _fill_target_and_mask(cfg, condition.ts, set_step, target, mask)
-    return target, mask
-
-
-def _jittered_ts_ms(cfg: Config, ts_ms: float, rng: np.random.Generator) -> float:
-    measured = float(rng.normal(ts_ms, ts_ms * cfg.w_m))
-    min_gap = max(cfg.dt, cfg.pulse_width)
-    max_gap = cfg.total_time - cfg.ready_onset - cfg.prod_hold - ts_ms
-    return float(np.clip(measured, min_gap, max(min_gap, max_gap)))
-
-
-def _fill_trial_arrays(
-    cfg: Config,
-    condition: Condition,
-    measured_ts_ms: float,
-    inputs: np.ndarray,
-    target: np.ndarray,
-    mask: np.ndarray,
-) -> int:
-    ready_step = cfg.ready_onset_step
-    set_step = ready_step + cfg.to_step(measured_ts_ms)
-    _fill_pulse(inputs, ready_step, cfg.pulse_width_step, cfg.pulse_height)
-    _fill_pulse(inputs, set_step, cfg.pulse_width_step, cfg.pulse_height)
-    inputs[:, 1] = cfg.prior_context[condition.prior]
-    inputs[:, 2] = cfg.effector_context[condition.effector]
-    _fill_target_and_mask(cfg, condition.ts, set_step, target, mask)
-    return set_step
-
-
-def _fill_pulse(inputs: np.ndarray, start: int, width: int, height: float) -> None:
-    stop = min(start + width, inputs.shape[0])
-    if start < inputs.shape[0] and stop > start:
-        inputs[start:stop, 0] = height
-
-
-def _fill_target_and_mask(
-    cfg: Config,
-    true_ts_ms: float,
-    set_step: int,
-    target: np.ndarray,
-    mask: np.ndarray,
-) -> None:
-    go_step = set_step + cfg.to_step(true_ts_ms)
-    hold_end = min(go_step + cfg.prod_hold_step, cfg.n_steps)
-    if set_step >= cfg.n_steps or go_step <= set_step:
-        return
-
-    ramp_end = min(go_step, cfg.n_steps)
-    ramp_steps = max(ramp_end - set_step, 1)
-    elapsed_ms = np.arange(ramp_steps, dtype=np.float32) * float(cfg.dt)
-    x = np.clip(elapsed_ms / float(true_ts_ms), 0.0, 1.0)
-    shaped = np.power(x, float(cfg.ramp_a))
-    if abs(cfg.ramp_A) > 1e-12:
-        shaped = (1.0 - np.exp(-float(cfg.ramp_A) * shaped)) / (1.0 - np.exp(-float(cfg.ramp_A)))
-    target[set_step:ramp_end] = cfg.threshold * shaped.astype(np.float32)
-    if go_step < cfg.n_steps:
-        target[go_step:hold_end] = cfg.threshold
-    mask[set_step:hold_end] = 1.0
+    rng = np.random.default_rng() if jitter else None
+    inputs, _, _, set_step = _build(cfg, condition, jitter=jitter, rng=rng)
+    return inputs[None, ...], int(set_step)
