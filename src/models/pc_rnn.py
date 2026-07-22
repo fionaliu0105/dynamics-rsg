@@ -173,6 +173,76 @@ class PCRNN(nn.Module, Model):
         values = self._effector_values.to(device=inputs.device, dtype=inputs.dtype)
         return torch.argmin((inputs[:, 0, 2:3] - values.unsqueeze(0)).abs(), dim=-1)
 
+    def _predict(self, x_prev: torch.Tensor, u_prev: torch.Tensor) -> torch.Tensor:
+        """One-step Euler prediction of the next raw value from ``[batch, units]``."""
+        alpha = self.cfg.alpha
+        return x_prev + alpha * (
+            -x_prev
+            + torch.tanh(x_prev) @ self.J.detach().t()
+            + u_prev @ self.B.detach().t()
+            + self.c_x.detach()
+        )
+
+    def _relax(self, values, inputs, target, mask):
+        """Relax value nodes by reverse-time coordinate descent on the PC energy.
+
+        This follows Millidge's ``PC_RNN.infer`` (PredictiveCodingBackprop, ``rnn.py``):
+        timesteps are visited in **reverse order** so each value node sees the
+        already-updated prediction error of the step that follows it, which is what
+        carries output error backward across the whole sequence.
+
+        The ordering is load-bearing, not stylistic.  Updating every timestep
+        simultaneously (a Jacobi sweep) moves error back exactly one step per
+        inference step, so with ``pc_inference_steps`` well below the sequence length
+        the readout error never reaches early values, the temporal error stays at its
+        initial zero, and the recurrent update ``dJ`` is starved -- the network then
+        appears to "train" while only its readout learns.  A reverse Gauss-Seidel
+        sweep propagates error across all ``T`` steps in a single pass.
+
+        Unlike Millidge we recompute predictions from the current values rather than
+        holding them at the forward sweep (his ``fixed_predictions=True``).  Fixed
+        predictions leave the temporal term pinned at its minimum, so the energy
+        cannot descend and the PC-A gate becomes unfalsifiable; recomputing makes
+        this genuine coordinate descent, so energy is monotone by construction.
+
+        ``values[:, 0]`` is held at the ``x0`` parameter -- it is the model's
+        initial-value node, not a free latent.
+        """
+        alpha = self.cfg.alpha
+        n_time = values.shape[1]
+        step = self.cfg.pc_inference_lr
+        J = self.J.detach()
+
+        idx = self._effector_index(inputs)
+        w_sel = self.w_o.detach()[idx]                     # [batch, units]
+        c_sel = self.c_z.detach()[idx]                     # [batch]
+
+        # error[:, t] is the temporal prediction error entering value t (t >= 1).
+        error = torch.zeros_like(values)
+        error[:, 1:] = values[:, 1:] - self._predict(values[:, :-1], inputs[:, :-1])
+
+        for _ in range(self.cfg.pc_inference_steps):
+            for t in range(n_time - 1, 0, -1):
+                r_t = torch.tanh(values[:, t])
+                deriv = 1.0 - r_t.square()
+
+                out_err = ((w_sel * r_t).sum(-1) + c_sel - target[:, t]) * mask[:, t]
+                delta = error[:, t] + out_err.unsqueeze(-1) * w_sel * deriv
+                if t < n_time - 1:
+                    # d pred_{t+1} / d x_t applied to the next step's error.
+                    delta = delta - (
+                        (1.0 - alpha) * error[:, t + 1]
+                        + alpha * (error[:, t + 1] @ J) * deriv
+                    )
+
+                values[:, t] = values[:, t] - step * delta
+                # Only the errors that touch value t change.
+                error[:, t] = values[:, t] - self._predict(values[:, t - 1], inputs[:, t - 1])
+                if t < n_time - 1:
+                    error[:, t + 1] = values[:, t + 1] - self._predict(values[:, t], inputs[:, t])
+
+        return values
+
     def _energy_and_errors(self, values, inputs, target, mask):
         """Return PC energy and prediction errors for the current value nodes.
 
@@ -255,11 +325,46 @@ class PCRNN(nn.Module, Model):
                 updates["c_z"][group] = err.sum()
         return updates
 
+    def _rescale_updates(self, updates, mask):
+        """Put PC updates on the same footing as the BPTT arm's gradients.
+
+        Two corrections, both matching what ``training/trainer.py`` already does for
+        BPTT and neither of which the raw local rule supplies:
+
+        1. **Normalize.** ``_local_updates`` accumulates raw *sums* over batch and
+           time, while the BPTT loss is a masked *mean* (``masked_mse`` divides by
+           ``mask.sum()``).  Left unnormalized the two arms differ by ~1e4 at the same
+           ``cfg.lr``, which is what drove the old divergence at iteration ~9.
+           Dividing the whole energy by ``mask.sum()`` is a scalar rescale of the
+           objective, so it changes step size without touching update direction.
+        2. **Clip.** ``cfg.grad_clip`` is applied to the BPTT arm but was never applied
+           here.  Millidge clamps elementwise (``clamp_val=50``); we use a global-norm
+           clip so the two arms share one clipping semantics.
+
+        Both keep architecture *and* optimizer handling parity, so a PC-vs-BPTT
+        difference remains attributable to the learning rule.
+        """
+        scale = float(mask.sum().clamp_min(1.0).item())
+        updates = {name: value / scale for name, value in updates.items()}
+
+        clip = float(self.cfg.grad_clip)
+        if clip > 0:
+            total = torch.sqrt(sum(value.square().sum() for value in updates.values()))
+            if bool(torch.isfinite(total)) and float(total) > clip:
+                updates = {name: value * (clip / (total + 1e-12)) for name, value in updates.items()}
+        return updates
+
     @staticmethod
     def _metrics(pc_update: torch.Tensor, bptt_grad: torch.Tensor) -> Dict[str, float]:
-        """Summarize one PC update against one autograd descent direction."""
-        # PC updates descend energy, exactly like negative BPTT gradients.
-        reference = -bptt_grad
+        """Summarize one PC update against the matching autograd gradient.
+
+        ``updates`` are *gradients*, not descent directions: ``infer_and_update``
+        applies them as ``parameter.add_(-lr * update)``.  The reference is therefore
+        ``+bptt_grad``, so a correct port scores ``cosine -> +1``.  This previously
+        negated the reference, which reported an exactly-correct readout update as
+        ``cosine = -1.000`` and made the PC-A alignment observable read backwards.
+        """
+        reference = bptt_grad
         denom = pc_update.norm() * reference.norm()
         cosine = float((pc_update.flatten() @ reference.flatten() / denom).item()) if denom > 0 else float("nan")
         relative_error = float((pc_update - reference).norm().div(reference.norm().clamp_min(1e-12)).item())
@@ -278,17 +383,23 @@ class PCRNN(nn.Module, Model):
            readout row from the tonic context input.
         4. Define energy as ``0.5 * (sum(temporal_error**2) +
            sum(masked_output_error**2))``.
-        5. Relax values for ``cfg.pc_inference_steps`` using the local value
-           gradient.  Backtracking halves the inference step size until energy is
-           non-increasing, preserving a deterministic energy-descent diagnostic.
+        5. Relax values with ``cfg.pc_inference_steps`` reverse-time Gauss-Seidel
+           sweeps (see ``_relax``).  Visiting timesteps in reverse is what carries
+           readout error backward across the sequence; energy descent is monotone
+           because each sweep is coordinate descent on the same energy.
         6. Compute local updates for ``J``, ``B``, ``c_x``, ``x0``, ``w_o``, and
-           ``c_z``.  If ``apply_update`` is true, subtract ``cfg.lr * update``
-           from each parameter.
+           ``c_z``, rescale them onto the BPTT arm's footing (``_rescale_updates``),
+           and, if ``apply_update`` is true, subtract ``cfg.lr * update`` from each
+           parameter.
+
+        Note that ``updates`` are *gradients*: they are applied as
+        ``parameter.add_(-lr * update)``, and ``_metrics`` scores them against
+        ``+bptt_grad``.
 
         Returns a diagnostic dictionary with:
 
         * ``energy_trace``: scalar energy before inference and after each
-          relaxation step.
+          relaxation sweep.
         * ``loss``: masked output MSE-style loss on the final inferred values.
         * ``updates``: detached update tensors keyed by parameter name.
         * ``values``: detached final raw inferred values ``[batch, time, units]``.
@@ -304,22 +415,13 @@ class PCRNN(nn.Module, Model):
             values = self._raw_forward_values(inputs)
             energy, temporal_error, output_error, r, output = self._energy_and_errors(values, inputs, target, mask)
             trace = [float(energy.item())]
-            for _ in range(self.cfg.pc_inference_steps):
-                grad = self._value_gradient(values, inputs, temporal_error, output_error, mask)
-                step = self.cfg.pc_inference_lr
-                # Clamp x[0] to its parameter: it is the model's initial-value node.
-                while True:
-                    candidate = values - step * grad
-                    candidate[:, 0] = self.x0.detach().to(candidate.dtype)
-                    candidate_energy, candidate_temporal, candidate_output, candidate_r, candidate_y = self._energy_and_errors(candidate, inputs, target, mask)
-                    if candidate_energy <= energy + 1e-7 or step < 1e-8:
-                        values, energy = candidate, candidate_energy
-                        temporal_error, output_error, r, output = candidate_temporal, candidate_output, candidate_r, candidate_y
-                        break
-                    step *= 0.5
-                trace.append(float(energy.item()))
+
+            values = self._relax(values, inputs, target, mask)
+            energy, temporal_error, output_error, r, output = self._energy_and_errors(values, inputs, target, mask)
+            trace.append(float(energy.item()))
 
             updates = self._local_updates(values, inputs, temporal_error, output_error, r)
+            updates = self._rescale_updates(updates, mask)
             parameters = {"J": self.J, "B": self.B, "c_x": self.c_x, "x0": self.x0, "w_o": self.w_o, "c_z": self.c_z}
             finite = {name: bool(torch.isfinite(value).all()) for name, value in updates.items()}
             if not all(finite.values()) or not torch.isfinite(values).all() or not torch.isfinite(energy):

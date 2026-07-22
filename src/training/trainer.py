@@ -1,8 +1,10 @@
 """Shared, restart-safe trainer for one RSG network seed.
 
 The task, checkpointing, metrics, and activation export paths are identical for
-BPTT and predictive coding.  Only the parameter update differs: BPTT uses Adam
-and autograd, while ``PCRNN.infer_and_update`` applies the local PC update.
+BPTT and predictive coding, and so is the optimizer (Adam).  Only the *direction*
+differs: BPTT gets it from autograd, while ``PCRNN.infer_and_update`` computes it
+from local prediction errors.  Holding the optimizer fixed is what lets a
+PC-vs-BPTT difference be attributed to the learning rule.
 """
 
 from __future__ import annotations
@@ -233,11 +235,14 @@ def train_one_seed(
     log.info("run identity: %s", identity)
 
     model = build_model(cfg).to(device)
-    optimizer = (
-        torch.optim.Adam(model.parameters(), lr=cfg.lr)
-        if cfg.rule == "bptt"
-        else None
-    )
+    # Both arms use Adam, deliberately. The contrast this project makes is about the
+    # *learning rule* -- the direction each rule proposes -- so the step-size policy
+    # must be held fixed alongside the architecture, or a PC-vs-BPTT difference also
+    # confounds Adam-vs-SGD. It is also load-bearing in practice: PC's recurrent
+    # update is ~4 orders of magnitude smaller than its readout update, so under plain
+    # SGD J moves by ~2e-4 over 150 iterations (frozen) while Adam's per-parameter
+    # scaling moves it by ~6.3. See docs/RUNBOOK.md "Gaps".
+    optimizer = torch.optim.Adam(model.parameters(), lr=cfg.lr)
     rng = np.random.default_rng(cfg.seed)
     start_iter = 0
     losses: list[float] = []
@@ -270,10 +275,18 @@ def train_one_seed(
             optimizer.step()
             loss = float(loss_tensor.detach().cpu())
         else:
-            diagnostics = model.infer_and_update(inputs, target, mask)
+            # PC computes its own local updates instead of autograd, but they are
+            # gradients in the same sense, so they are handed to the same optimizer
+            # rather than applied as plain SGD inside the model.
+            assert optimizer is not None
+            diagnostics = model.infer_and_update(inputs, target, mask, apply_update=False)
             loss = float(diagnostics["loss"])
             if not np.isfinite(loss):
                 raise FloatingPointError(f"non-finite PC loss at iteration {iteration}")
+            optimizer.zero_grad(set_to_none=False)
+            for name, parameter in model.named_parameters():
+                parameter.grad = diagnostics["updates"][name].to(parameter.device).clone()
+            optimizer.step()
 
         losses.append(loss)
         if loss < best_loss:
