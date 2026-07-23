@@ -28,13 +28,23 @@ We train recurrent networks on the two-prior Ready-Set-Go (RSG) interval-timing 
 Pipeline, in order:
 
 1. Define the task and load the DMFC neural data into one shared condition schema.
-2. Train RNNs under both learning rules, BPTT and PC, across multiple seeds.
+2. Train RNNs under each learning rule (BPTT, PC, RFLO) across multiple seeds.
 3. Measure behavior per seed (regression of produced intervals toward the prior mean).
 4. Extract latents; apply **identical** preprocessing to model and neural data.
 5. Compare against DMFC with RSA (geometry) and iDSA (dynamics).
 6. Aggregate over seeds and test the primary contrast: PC vs BPTT distance to DMFC.
 
 The validity of the whole thing rests on step 4 and on treating seeds as the unit of evidence. Latents that were not preprocessed identically cannot be compared, and a single network per condition is not a result. Neither is negotiable.
+
+### The third arm: RFLO
+
+The proposal specifies the two-arm PC-vs-BPTT contrast, and step 6 above is still **the primary result**. RFLO (Murray 2019, eLife 8:e43299) was added afterwards as a third arm and should be reported alongside, not in place of, that contrast.
+
+The reason it earns a place is that it turns a binary into an axis. BPTT is nonlocal in time and space; PC is local in space but relaxes value nodes over the whole stored trajectory; RFLO is local in **both** and single-pass online. So "does locality of the learning rule leave a signature on latent geometry" becomes a graded question with three points rather than a two-way comparison.
+
+It obeys the same constraint that makes the original contrast interpretable: it drives the same six parameter tensors on the same architecture. `RFLORNN` subclasses `BPTTRNN` rather than copying its rollout, so forward parity is structural, and its feedback matrix is drawn from a separate RNG stream so seed *N* of every arm starts from bit-identical weights. Do not "simplify" either of those.
+
+Expectation to test, not a fact to design around: RFLO's eligibility trace decays with `tau` (10 ms), against Ready→Set intervals up to 1200 ms, and long-range temporal credit assignment is its documented weak point. If it bites, it should surface as a flatter tp-vs-ts slope on the long prior. That is a result to report next to the similarity — **not** grounds for a behavioral filter, which remains prohibited for every arm.
 
 ## Sources and their status
 
@@ -58,8 +68,10 @@ src/                     # importable package (see Open items re: name)
   conditions.py          # ts, prior, effector defined ONCE; task + neural loader both import
   task/                  # two-prior RSG; wraps/extends NeuroGym ReadySetGo-v0
   models/                # base interface: forward(inputs) -> outputs, states [trials, time, units]
-    bptt_rnn.py
+    bptt_rnn.py          # SHARED forward model; the other arms reuse its rollout
     pc_rnn.py            # predictive-coding RNN (the main technical risk)
+    rflo_rnn.py          # RFLO (Murray 2019); subclasses bptt_rnn for forward parity
+    local_update.py      # shared normalize+clip for rules that compute own updates
   training/              # shared trainer: config, ONE seed per invocation, checkpoint/resume, logging
   behavior/              # tp-vs-ts slope per prior; a REPORTED metric, not a filter
   data/                  # DANDI 000130 (NWB) -> binned [condition, time, unit] + behavioral tp

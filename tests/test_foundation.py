@@ -75,10 +75,12 @@ def test_config_roundtrip():
 
 def test_sweep_grid():
     grid = sweep_configs(pc_inference_steps=[5, 20], n_seeds=4, regime="reduced")
-    # BPTT: 1 point x 4 seeds; PC: 2 points x 4 seeds  => 4 + 8 = 12
-    assert len(grid) == 12
+    # The inference-step axis varies PC only; BPTT and RFLO each get a single point.
+    # BPTT: 1 x 4 seeds; PC: 2 x 4; RFLO: 1 x 4  => 4 + 8 + 4 = 16
+    assert len(grid) == 16
     assert sum(c.rule == "bptt" for c in grid) == 4
     assert sum(c.rule == "pc" for c in grid) == 8
+    assert sum(c.rule == "rflo" for c in grid) == 4
     print("test_sweep_grid OK")
 
 

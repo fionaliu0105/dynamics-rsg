@@ -1,10 +1,12 @@
 """Shared, restart-safe trainer for one RSG network seed.
 
-The task, checkpointing, metrics, and activation export paths are identical for
-BPTT and predictive coding, and so is the optimizer (Adam).  Only the *direction*
-differs: BPTT gets it from autograd, while ``PCRNN.infer_and_update`` computes it
-from local prediction errors.  Holding the optimizer fixed is what lets a
-PC-vs-BPTT difference be attributed to the learning rule.
+The task, checkpointing, metrics, and activation export paths are identical across all
+three learning rules, and so is the optimizer (Adam).  Only the *direction* differs:
+BPTT gets it from autograd, while the local rules in :data:`LOCAL_RULES` compute it
+themselves -- ``PCRNN.infer_and_update`` from relaxed prediction errors, and
+``RFLORNN.infer_and_update`` from online eligibility traces and random feedback.
+Holding the optimizer fixed is what lets a rule-vs-rule difference be attributed to
+the learning rule.
 """
 
 from __future__ import annotations
@@ -29,6 +31,17 @@ from src.task import active_backend
 from src.training.config import Config
 
 log = logging.getLogger(__name__)
+
+#: Rules that compute their own update direction instead of getting it from autograd.
+#: They share one contract -- ``model.infer_and_update(inputs, target, mask,
+#: apply_update=...) -> {"loss": float, "updates": {param_name: tensor}}`` -- so the
+#: training loop treats them identically and only BPTT needs a separate branch.
+LOCAL_RULES = frozenset({"pc", "rflo"})
+
+
+def _local_optimizer_choice(cfg: Config) -> str:
+    """Which step-size policy a local rule uses: ``"adam"`` (default) or ``"sgd"``."""
+    return cfg.pc_optimizer if cfg.rule == "pc" else cfg.rflo_optimizer
 
 
 def set_seeds(seed: int) -> None:
@@ -75,6 +88,10 @@ def build_model(cfg: Config):
         from src.models.pc_rnn import PCRNN
 
         return PCRNN(cfg)
+    if cfg.rule == "rflo":
+        from src.models.rflo_rnn import RFLORNN
+
+        return RFLORNN(cfg)
     raise ValueError(f"unknown rule {cfg.rule!r}")
 
 
@@ -259,16 +276,17 @@ def train_one_seed(
     log.info("run identity: %s", identity)
 
     model = build_model(cfg).to(device)
-    # Default: both arms use Adam. The contrast this project makes is about the
+    # Default: all three arms use Adam. The contrast this project makes is about the
     # *learning rule* -- the direction each rule proposes -- so the step-size policy is
-    # held fixed alongside the architecture, or a PC-vs-BPTT difference also confounds
+    # held fixed alongside the architecture, or a rule-vs-rule difference also confounds
     # Adam-vs-SGD. It is load-bearing in practice too: PC's recurrent update is ~4
     # orders of magnitude smaller than its readout update, so under plain SGD J moves
     # by ~2e-4 over 150 iterations (frozen) while Adam moves it by ~6.3. Set
-    # cfg.pc_optimizer="sgd" for the pure local rule. See docs/RUNBOOK.md "Gaps".
-    pc_uses_optimizer = cfg.rule != "pc" or cfg.pc_optimizer == "adam"
+    # cfg.pc_optimizer / cfg.rflo_optimizer to "sgd" for the pure local rule.
+    # See docs/RUNBOOK.md "Gaps".
+    uses_optimizer = cfg.rule not in LOCAL_RULES or _local_optimizer_choice(cfg) == "adam"
     optimizer = (
-        torch.optim.Adam(model.parameters(), lr=cfg.lr) if pc_uses_optimizer else None
+        torch.optim.Adam(model.parameters(), lr=cfg.lr) if uses_optimizer else None
     )
     rng = np.random.default_rng(cfg.seed)
     start_iter = 0
@@ -304,21 +322,25 @@ def train_one_seed(
             torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
             optimizer.step()
             loss = float(loss_tensor.detach().cpu())
-        else:
-            # PC computes its own local updates instead of autograd, but they are
-            # gradients in the same sense, so they are handed to the same optimizer
+        elif cfg.rule in LOCAL_RULES:
+            # PC and RFLO compute their own local updates instead of autograd, but they
+            # are gradients in the same sense, so they are handed to the same optimizer
             # rather than applied as plain SGD inside the model.
             diagnostics = model.infer_and_update(
                 inputs, target, mask, apply_update=optimizer is None
             )
             loss = float(diagnostics["loss"])
             if not np.isfinite(loss):
-                raise FloatingPointError(f"non-finite PC loss at iteration {iteration}")
+                raise FloatingPointError(
+                    f"non-finite {cfg.rule} loss at iteration {iteration}"
+                )
             if optimizer is not None:
                 optimizer.zero_grad(set_to_none=False)
                 for name, parameter in model.named_parameters():
                     parameter.grad = diagnostics["updates"][name].to(parameter.device).clone()
                 optimizer.step()
+        else:
+            raise ValueError(f"unknown rule {cfg.rule!r}")
 
         losses.append(loss)
         if loss < best_loss:

@@ -29,7 +29,7 @@ def _smoke_config(rule: str, seed: int) -> Config:
     )
 
 
-@pytest.mark.parametrize(("rule", "seed"), [("bptt", 4), ("pc", 5)])
+@pytest.mark.parametrize(("rule", "seed"), [("bptt", 4), ("pc", 5), ("rflo", 6)])
 def test_neurogym_training_end_to_end(tmp_path, rule, seed):
     cfg = _smoke_config(rule, seed)
     run_dir = tmp_path / "runs" / rule / f"seed_{seed:04d}"

@@ -6,7 +6,8 @@ It reads activations off the store, routes every system through one shared
 compares dynamics with InputDSA.
 
 Two modes, mirroring scripts/run_rsa.py:
-    * rule-vs-rule (default)  : BPTT vs PC per seed. Runs today from the store alone.
+    * rule-vs-rule (default)  : every unordered pair of --rules, per seed. Runs today
+      from the store alone.
     * model-to-DMFC (--neural): each model seed vs the DMFC operators. Needs the neural
       state tensor AND its external-input representation (--neural-inputs), so it
       activates once ingestion (1.D) and the neural input rep have landed (plan 2.5).
@@ -22,6 +23,7 @@ Backend is InputDSAConfig.backend: "dsa-metric" (official package, own env) with
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import sys
 from pathlib import Path
@@ -85,12 +87,24 @@ def run(
         result = {"mode": "model-to-DMFC", "distances": by_rule,
                   "components": {f"{r}:{s}": per[(r, s)] for r in rules for s in seeds}}
     else:
-        # Fit the shared base on the first model system; compare BPTT vs PC per seed.
+        # Fit the shared base on the first model system, then compare EVERY unordered
+        # pair of rules per seed. Looping over pairs (rather than just rules[0] vs
+        # rules[1]) is what keeps a third learning rule from being silently dropped
+        # here -- with three arms the old form compared two of them and discarded the
+        # rest without a word. Mirrors src.compare.rsa.rsa_distances_per_seed.
+        if len(rules) < 2:
+            raise SystemExit(
+                f"rule-vs-rule needs at least 2 rules, got {rules}; pass --neural for "
+                f"the model-to-DMFC comparison instead."
+            )
         pre.fit(stack_states(store, rules[0], seeds[0]))
-        per = stage3_bptt_vs_pc(
-            store, seeds, pre, cfg=cfg, model_a=rules[0], model_b=rules[1],
-        )
-        result = {"mode": "rule-vs-rule", "per_seed": {str(s): per[s] for s in seeds}}
+        by_pair = {}
+        for rule_a, rule_b in itertools.combinations(rules, 2):
+            per = stage3_bptt_vs_pc(
+                store, seeds, pre, cfg=cfg, model_a=rule_a, model_b=rule_b,
+            )
+            by_pair[f"{rule_a}_vs_{rule_b}"] = {str(s): per[s] for s in seeds}
+        result = {"mode": "rule-vs-rule", "per_seed_by_pair": by_pair}
 
     _atomic_json(out_dir / "idsa_distances.json", result)
     return result
