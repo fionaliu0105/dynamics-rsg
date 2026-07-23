@@ -111,7 +111,14 @@ def run(
     out_dir.mkdir(parents=True, exist_ok=True)
     payload = {"distances": distances, "noise_ceiling": ceilings}
     _atomic_json(out_dir / "rsa_distances.json", payload)
-    summary_distance_figure(distances, out_dir=out_dir / "figures", ceilings=ceilings)
+    if neural_path is not None:
+        summary_distance_figure(distances, out_dir=out_dir / "figures", ceilings=ceilings)
+    else:
+        summary_distance_figure(
+            distances, out_dir=out_dir / "figures",
+            title_suffix="distance, per seed (model-to-model, no DMFC)",
+            name="summary_distance_model_to_model",
+        )
     return distances
 
 

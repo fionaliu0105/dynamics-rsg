@@ -79,15 +79,23 @@ def summary_distance_figure(
     distances: Dict[str, Dict[str, Sequence[float]]],
     out_dir: Path = RESULTS_DIR,
     ceilings: Optional[Mapping[str, Tuple[float, float]]] = None,
+    title_suffix: str = "distance to DMFC",
+    name: str = "summary_distance_to_dmfc",
 ) -> Path:
     """THE headline figure: distance-to-DMFC per rule, per metric, with seed spread.
 
     Args:
         distances: ``{metric: {rule: [per-seed distances]}}``, e.g.
-            ``{"RSA": {"bptt": [...], "pc": [...]}, "iDSA": {...}}``.
+            ``{"RSA": {"bptt": [...], "pc": [...]}, "iDSA": {...}}``. Also reused for
+            rule-vs-rule (model-to-model, no DMFC) comparisons, where the "rule" keys
+            are instead comparison labels (e.g. ``{"pc_steps20": [...], "pc_steps100":
+            [...]}``) — pass ``title_suffix``/``name`` to describe that case correctly,
+            since "distance to DMFC" would be wrong when there's no DMFC involved.
         ceilings: optional ``{metric: (lower, upper)}`` neural noise-ceiling band, in
             the SAME distance units, drawn as a shaded span per metric panel (from
             ``src.compare.rsa.noise_ceiling``). Omitted metrics get no band.
+        title_suffix: appended to each panel's title as ``f"{metric}: {title_suffix}"``.
+        name: output filename (without extension).
 
     Draws mean +/- spread over seeds per rule, grouped by metric. This reads saved
     metrics only. Reusable as-is; tracks feed it their per-seed distance arrays.
@@ -106,11 +114,11 @@ def summary_distance_figure(
                 ax.scatter(np.full(vals.size, i), vals, color="k", s=12, zorder=3)
         ax.set_xticks(range(len(rules)))
         ax.set_xticklabels(rules)
-        ax.set_title(f"{metric}: distance to DMFC")
+        ax.set_title(f"{metric}: {title_suffix}")
         ax.set_ylabel("distance (per-seed spread)")
         if ceilings and metric in ceilings:
             ax.legend(fontsize=8)
-    return savefig(fig, "summary_distance_to_dmfc", out_dir)
+    return savefig(fig, name, out_dir)
 
 
 def training_loss_figure(

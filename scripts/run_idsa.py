@@ -91,6 +91,13 @@ def run(
             store, seeds, pre, cfg=cfg, model_a=rules[0], model_b=rules[1],
         )
         result = {"mode": "rule-vs-rule", "per_seed": {str(s): per[s] for s in seeds}}
+        label = f"{rules[0]}_vs_{rules[1]}"
+        distances = {"iDSA": {label: [per[s]["distance"] for s in seeds]}}
+        summary_distance_figure(
+            distances, out_dir=out_dir / "figures",
+            title_suffix="distance, per seed (model-to-model, no DMFC)",
+            name="summary_distance_model_to_model",
+        )
 
     _atomic_json(out_dir / "idsa_distances.json", result)
     return result
