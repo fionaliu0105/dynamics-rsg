@@ -23,7 +23,10 @@ from src.viz.figures import summary_distance_figure
 
 RSA_DIR = Path("results/rsa")
 IDSA_DIR = Path("results/idsa")
-ARMS = ["bptt", "rflo", "pc_steps20", "pc_steps100"]
+# Untrained control first, then the locality axis BPTT -> PC -> RFLO. Without the
+# control a distance-to-DMFC bar has no floor: a random RNN with this architecture
+# and this input drive already sits at some finite distance from DMFC.
+ARMS = ["untrained", "bptt", "pc_steps20", "pc_steps100", "rflo"]
 
 
 def main() -> int:

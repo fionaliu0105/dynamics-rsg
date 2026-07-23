@@ -101,7 +101,14 @@ def summary_distance_figure(
     metrics only. Reusable as-is; tracks feed it their per-seed distance arrays.
     """
     metrics = list(distances)
-    rules = sorted({r for m in distances.values() for r in m})
+    # Insertion order, NOT sorted: callers order their arms along the locality axis
+    # (untrained -> BPTT -> PC -> RFLO), and alphabetising would scramble the very
+    # trend the three-arm design exists to show.
+    rules: list = []
+    for m in distances.values():
+        for r in m:
+            if r not in rules:
+                rules.append(r)
     fig, axes = plt.subplots(1, len(metrics), figsize=(5 * len(metrics), 4), squeeze=False)
     for ax, metric in zip(axes[0], metrics):
         if ceilings and metric in ceilings:
@@ -109,16 +116,36 @@ def summary_distance_figure(
             ax.axhspan(lo, hi, color="0.8", alpha=0.6, zorder=0, label="noise ceiling")
         for i, rule in enumerate(rules):
             vals = np.asarray(distances[metric].get(rule, []), dtype=float)
+            vals = vals[np.isfinite(vals)]
             if vals.size:
-                ax.bar(i, vals.mean(), yerr=vals.std(), capsize=5, label=rule)
+                lo_ci, hi_ci = _bootstrap_ci(vals)
+                err = np.array([[vals.mean() - lo_ci], [hi_ci - vals.mean()]])
+                ax.bar(i, vals.mean(), yerr=err, capsize=5, label=rule)
                 ax.scatter(np.full(vals.size, i), vals, color="k", s=12, zorder=3)
         ax.set_xticks(range(len(rules)))
-        ax.set_xticklabels(rules)
+        ax.set_xticklabels(rules, rotation=20, ha="right")
         ax.set_title(f"{metric}: {title_suffix}")
-        ax.set_ylabel("distance (per-seed spread)")
+        ax.set_ylabel("distance (points = seeds, bars = 95% bootstrap CI)")
         if ceilings and metric in ceilings:
             ax.legend(fontsize=8)
     return savefig(fig, name, out_dir)
+
+
+def _bootstrap_ci(values: np.ndarray, n_boot: int = 10000, alpha: float = 0.05
+                  ) -> Tuple[float, float]:
+    """Percentile bootstrap CI of the mean over SEEDS.
+
+    AGENTS.md asks for CIs, not SD: with ~10 seeds the SD of the sample describes the
+    seed spread, which is not the same as the uncertainty in the arm's mean, and the
+    two get read interchangeably off a bar chart. Seeded RNG so a figure redraw is
+    reproducible.
+    """
+    vals = np.asarray(values, dtype=float)
+    if vals.size < 2:
+        return float(vals.mean()), float(vals.mean())
+    rng = np.random.default_rng(0)
+    draws = rng.choice(vals, size=(n_boot, vals.size), replace=True).mean(axis=1)
+    return float(np.percentile(draws, 100 * alpha / 2)), float(np.percentile(draws, 100 * (1 - alpha / 2)))
 
 
 def training_loss_figure(
@@ -582,4 +609,194 @@ def pca_trajectories_figure(
     ax.set_ylabel("PC2")
     ax.set_title("condition trajectories in PCA space (o=start, sq=end)")
     ax.legend(fontsize=5, loc="best", ncol=ncol)
+    return savefig(fig, name, out_dir)
+
+
+# ---------------------------------------------------------------------------
+# Learning-rule signature panels (src.compare.baseline)
+# ---------------------------------------------------------------------------
+
+def within_between_matrix_figure(
+    matrix: Mapping[str, object],
+    metric_name: str = "RSA",
+    out_dir: Path = RESULTS_DIR,
+    name: str = "within_between_matrix",
+    labels: Optional[Mapping[str, str]] = None,
+) -> Path:
+    """Arm x arm distance matrix whose DIAGONAL is the within-arm seed-to-seed null.
+
+    Reading rule, stated on the figure so it survives being pasted into a slide: an
+    off-diagonal cell that is not clearly darker/larger than the two diagonal cells it
+    sits between means those two rules are no more different from each other than two
+    seeds of the SAME rule -- i.e. no learning-rule signature for that pair.
+
+    Consumes the dict returned by ``src.compare.baseline.within_between_matrix``.
+    """
+    arms = list(matrix["arms"])
+    mean = np.asarray(matrix["mean"], dtype=float)
+    disp = [labels.get(a, a) if labels else a for a in arms]
+
+    fig, ax = plt.subplots(figsize=(1.55 * len(arms) + 2.4, 1.35 * len(arms) + 2.0))
+    im = ax.imshow(mean, cmap="viridis")
+    ax.set_xticks(range(len(arms)))
+    ax.set_yticks(range(len(arms)))
+    ax.set_xticklabels(disp, rotation=30, ha="right", fontsize=9)
+    ax.set_yticklabels(disp, fontsize=9)
+    vmid = np.nanmean(mean)
+    for i in range(len(arms)):
+        for j in range(len(arms)):
+            if not np.isfinite(mean[i, j]):
+                continue
+            face = "white" if mean[i, j] < vmid else "black"
+            weight = "bold" if i == j else "normal"
+            ax.text(j, i, f"{mean[i, j]:.3f}", ha="center", va="center",
+                    color=face, fontsize=9, fontweight=weight)
+    for i in range(len(arms)):  # ring the null cells so the eye finds them first
+        ax.add_patch(plt.Rectangle((i - 0.5, i - 0.5), 1, 1, fill=False,
+                                   edgecolor="crimson", linewidth=2.2))
+    fig.colorbar(im, ax=ax, fraction=0.046, label=f"{metric_name} distance")
+    ax.set_title(f"{metric_name}: between-rule distance vs within-rule seed null\n"
+                 "(red = within-rule, seed-to-seed)", fontsize=10)
+    return savefig(fig, name, out_dir)
+
+
+def paired_contrast_figure(
+    contrasts: Mapping[str, Mapping[str, object]],
+    reference_arm: str,
+    metric_name: str = "RSA",
+    out_dir: Path = RESULTS_DIR,
+    name: str = "paired_seed_contrast",
+    labels: Optional[Mapping[str, str]] = None,
+) -> Path:
+    """Paired per-seed difference in distance-to-DMFC, arm minus reference arm.
+
+    One point per seed, connected to zero, because seed *N* of every arm starts from
+    bit-identical weights -- the pairing removes initialization variance that an
+    unpaired two-cloud comparison leaves in. Points BELOW zero are seeds where that
+    arm is closer to DMFC than the reference.
+
+    Consumes ``src.compare.baseline.paired_seed_contrast`` output.
+    """
+    arms = list(contrasts)
+    fig, ax = plt.subplots(figsize=(1.9 * len(arms) + 2.6, 4.4))
+    rng = np.random.default_rng(0)  # reproducible jitter
+    counts = []
+    for x, arm in enumerate(arms):
+        deltas = np.asarray(contrasts[arm]["deltas"], dtype=float)
+        if not deltas.size:
+            continue
+        jitter = rng.uniform(-0.13, 0.13, size=deltas.size)
+        for xi, d in zip(np.full(deltas.size, x) + jitter, deltas):
+            ax.plot([xi, xi], [0, d], color="0.75", linewidth=0.9, zorder=1)
+        ax.scatter(np.full(deltas.size, x) + jitter, deltas, s=42, zorder=3,
+                   color=["#B2182B" if d > 0 else "#2166AC" for d in deltas],
+                   edgecolors="white", linewidths=0.5)
+        ax.hlines(float(deltas.mean()), x - 0.3, x + 0.3, color="black",
+                  linewidth=2.2, zorder=4)
+        counts.append((x, int((deltas < 0).sum()), deltas.size))
+    ax.axhline(0, color="black", linewidth=1.1, linestyle="--")
+    # Annotate only once the data limits are final, so the labels sit inside the axes
+    # instead of drifting into the title as later arms extend the y range.
+    lo, hi = ax.get_ylim()
+    ax.set_ylim(lo, hi + 0.12 * (hi - lo))
+    for x, n_closer, n_total in counts:
+        ax.text(x, hi + 0.02 * (hi - lo), f"{n_closer}/{n_total} closer",
+                ha="center", va="bottom", fontsize=8)
+    ax.set_xticks(range(len(arms)))
+    ax.set_xticklabels([labels.get(a, a) if labels else a for a in arms],
+                       rotation=15, ha="right")
+    ax.set_ylabel(f"Δ {metric_name} distance to DMFC\n(arm − {reference_arm}, paired by seed)")
+    ax.set_title(f"{metric_name}: paired per-seed contrast against {reference_arm}\n"
+                 "below 0 = closer to DMFC than the reference", fontsize=10)
+    ax.grid(True, axis="y", color="#d0d7de", linewidth=0.6, alpha=0.8)
+    return savefig(fig, name, out_dir)
+
+
+def per_ts_curve_figure(
+    curves: Mapping[str, Mapping[str, Sequence[float]]],
+    ts_by_prior: Mapping[str, Sequence[int]],
+    metric_name: str = "RSA",
+    out_dir: Path = RESULTS_DIR,
+    name: str = "per_ts_distance",
+    ceiling: Optional[Tuple[float, float]] = None,
+    labels: Optional[Mapping[str, str]] = None,
+) -> Path:
+    """Distance-to-DMFC as a function of ts, drawn separately per prior.
+
+    Why not the two-band (short/long) summary: the short band is short INTERVALS and
+    the short PRIOR at once, so a band difference cannot say which factor moved. A
+    per-ts curve puts interval length on a continuous axis, and the two priors meet at
+    ts=800 -- the one condition where the same physical interval carries opposite
+    priors (``src.conditions.OVERLAP_TS_MS``). Divergence at that shared x is prior,
+    not interval.
+
+    ``curves``: ``{arm: {prior: [mean distance per ts, in ts order]}}``.
+    """
+    priors = list(ts_by_prior)
+    fig, axes = plt.subplots(1, len(priors), figsize=(5.0 * len(priors), 4.2),
+                             sharey=True, squeeze=False)
+    palette = plt.cm.tab10.colors
+    for ax, prior in zip(axes[0], priors):
+        if ceiling is not None:
+            ax.axhspan(ceiling[0], ceiling[1], color="0.82", alpha=0.7, zorder=0,
+                       label="neural noise ceiling")
+        xs = list(ts_by_prior[prior])
+        for i, arm in enumerate(curves):
+            ys = curves[arm].get(prior)
+            if ys is None:
+                continue
+            ax.plot(xs, ys, marker="o", markersize=5, linewidth=1.8,
+                    color=palette[i % len(palette)],
+                    label=labels.get(arm, arm) if labels else arm)
+        ax.axvline(800, color="#6b7280", linestyle=":", linewidth=1.4)
+        ax.set_xlabel("ts (ms)")
+        ax.set_title(f"{prior} prior")
+        ax.grid(True, color="#d0d7de", linewidth=0.6, alpha=0.8)
+    axes[0][0].set_ylabel(f"{metric_name} distance to DMFC")
+    axes[0][-1].legend(fontsize=8, frameon=False)
+    fig.suptitle(f"{metric_name} distance to DMFC vs interval length "
+                 "(dotted line = ts=800, present in BOTH priors)", fontsize=11)
+    return savefig(fig, name, out_dir)
+
+
+def overlap_separation_figure(
+    separations: Mapping[str, Sequence[float]],
+    neural_value: Optional[float] = None,
+    out_dir: Path = RESULTS_DIR,
+    name: str = "overlap_800_separation",
+    labels: Optional[Mapping[str, str]] = None,
+) -> Path:
+    """Latent separation between short-800 and long-800, per arm, against DMFC.
+
+    ts=800 is the experiment's identifiability point for the prior: identical stimulus,
+    opposite bias (``src.conditions``). How far apart a system holds those two
+    conditions is a direct read of how strongly it represents prior context, with
+    interval length held fixed. One point per seed; the dashed line is DMFC.
+    """
+    arms = list(separations)
+    fig, ax = plt.subplots(figsize=(1.75 * len(arms) + 2.4, 4.4))
+    rng = np.random.default_rng(0)
+    palette = plt.cm.tab10.colors
+    for x, arm in enumerate(arms):
+        vals = np.asarray(separations[arm], dtype=float)
+        vals = vals[np.isfinite(vals)]
+        if not vals.size:
+            continue
+        jitter = rng.uniform(-0.15, 0.15, size=vals.size)
+        ax.scatter(np.full(vals.size, x) + jitter, vals, s=42,
+                   color=palette[x % len(palette)], edgecolors="white",
+                   linewidths=0.5, zorder=3)
+        ax.hlines(vals.mean(), x - 0.3, x + 0.3, color="black", linewidth=2.2, zorder=4)
+    if neural_value is not None and np.isfinite(neural_value):
+        ax.axhline(neural_value, color="#B2182B", linestyle="--", linewidth=1.6,
+                   label=f"DMFC ({neural_value:.3f})")
+        ax.legend(fontsize=9, frameon=False)
+    ax.set_xticks(range(len(arms)))
+    ax.set_xticklabels([labels.get(a, a) if labels else a for a in arms],
+                       rotation=15, ha="right")
+    ax.set_ylabel("short-800 vs long-800 latent separation")
+    ax.set_title("Prior representation at the shared interval (ts=800)\n"
+                 "same stimulus, opposite prior — higher = stronger prior coding",
+                 fontsize=10)
+    ax.grid(True, axis="y", color="#d0d7de", linewidth=0.6, alpha=0.8)
     return savefig(fig, name, out_dir)
