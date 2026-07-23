@@ -224,8 +224,9 @@ class PCRNN(nn.Module, Model):
 
         The output error compares the effector-gated readout to ``target`` and is
         multiplied by ``mask`` so only scored time points contribute.  The scalar
-        energy is half the sum of squared temporal errors plus half the sum of
-        squared masked output errors.
+        energy is half the sum of squared temporal errors, weighted by
+        ``cfg.pc_temporal_precision`` (default 1.0, i.e. unweighted), plus half the
+        sum of squared masked output errors.
         """
         alpha = self.cfg.alpha
         r = torch.tanh(values)
@@ -240,28 +241,33 @@ class PCRNN(nn.Module, Model):
         idx = self._effector_index(inputs).view(-1, 1, 1).expand(-1, values.shape[1], 1)
         output = both.gather(-1, idx).squeeze(-1)
         output_error = (output - target) * mask
-        energy = 0.5 * (temporal_error.square().sum() + output_error.square().sum())
+        precision = self.cfg.pc_temporal_precision
+        energy = 0.5 * (precision * temporal_error.square().sum() + output_error.square().sum())
         return energy, temporal_error, output_error, r, output
 
     def _value_gradient(self, values, inputs, temporal_error, output_error, mask):
         """Compute the local gradient used to relax raw PC value nodes.
 
-        Each value receives direct temporal-error pressure from its own mismatch,
-        output-error pressure through the selected readout row and ``tanh``
-        derivative, and propagated pressure because changing ``x_t`` changes the
-        Euler prediction for ``x_{t+1}``.
+        Each value receives direct temporal-error pressure from its own mismatch
+        (scaled by ``cfg.pc_temporal_precision``, default 1.0), output-error
+        pressure through the selected readout row and ``tanh`` derivative, and
+        propagated pressure because changing ``x_t`` changes the Euler prediction
+        for ``x_{t+1}``.
         """
         alpha = self.cfg.alpha
+        precision = self.cfg.pc_temporal_precision
         derivative = 1.0 - torch.tanh(values).square()
         grad = torch.zeros_like(values)
-        grad[:, 1:] += temporal_error
+        grad[:, 1:] += precision * temporal_error
 
         idx = self._effector_index(inputs)
         selected_w = self.w_o.detach()[idx]  # [B, N]
         grad += (output_error.unsqueeze(-1) * selected_w.unsqueeze(1)) * derivative
 
         # Each value also changes the one-step prediction that follows it.
-        propagated = (1.0 - alpha) * temporal_error + alpha * (temporal_error @ self.J.detach()) * derivative[:, :-1]
+        propagated = precision * (
+            (1.0 - alpha) * temporal_error + alpha * (temporal_error @ self.J.detach()) * derivative[:, :-1]
+        )
         grad[:, :-1] -= propagated
         return grad
 
