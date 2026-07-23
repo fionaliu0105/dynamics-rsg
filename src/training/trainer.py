@@ -161,7 +161,11 @@ def _restore_checkpoint(path: Path, model, optimizer, rng, device):
     rng.bit_generator.state = checkpoint["numpy_rng_state"]
     torch.set_rng_state(checkpoint["torch_rng_state"].cpu())
     if torch.cuda.is_available() and checkpoint["cuda_rng_state"] is not None:
-        torch.cuda.set_rng_state_all(checkpoint["cuda_rng_state"])
+        # map_location above moves every saved tensor onto `device`, but CUDA RNG
+        # state must be a CPU ByteTensor (same reason torch_rng_state gets .cpu()
+        # just above) -- otherwise set_rng_state_all raises on the generator's
+        # internal state check.
+        torch.cuda.set_rng_state_all([state.cpu() for state in checkpoint["cuda_rng_state"]])
     return (
         int(checkpoint["iteration"]) + 1,
         [float(value) for value in checkpoint["losses"]],

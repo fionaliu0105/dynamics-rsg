@@ -99,12 +99,20 @@ def run(
             )
         pre.fit(stack_states(store, rules[0], seeds[0]))
         by_pair = {}
+        distances = {"iDSA": {}}
         for rule_a, rule_b in itertools.combinations(rules, 2):
             per = stage3_bptt_vs_pc(
                 store, seeds, pre, cfg=cfg, model_a=rule_a, model_b=rule_b,
             )
-            by_pair[f"{rule_a}_vs_{rule_b}"] = {str(s): per[s] for s in seeds}
+            label = f"{rule_a}_vs_{rule_b}"
+            by_pair[label] = {str(s): per[s] for s in seeds}
+            distances["iDSA"][label] = [per[s]["distance"] for s in seeds]
         result = {"mode": "rule-vs-rule", "per_seed_by_pair": by_pair}
+        summary_distance_figure(
+            distances, out_dir=out_dir / "figures",
+            title_suffix="distance, per seed (model-to-model, no DMFC)",
+            name="summary_distance_model_to_model",
+        )
 
     _atomic_json(out_dir / "idsa_distances.json", result)
     return result

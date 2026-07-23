@@ -85,6 +85,15 @@ class Config:
     # --- predictive coding (ignored when rule == "bptt") ------------------------
     pc_inference_steps: int = 20              # value-relaxation steps; SWEEP THIS
     pc_inference_lr: float = 0.1              # latent-state update rate
+    # Precision weight on the temporal (self-consistency) term of the relaxation
+    # energy, relative to the output-matching term (implicit weight 1.0). Standard
+    # PC concept (precision-weighted prediction errors), not new to this project --
+    # exists because relaxation was found to buy near-zero output_error at almost no
+    # temporal_error cost, given far more free latent values than real constraints,
+    # settling on trajectories forward() alone cannot reproduce (see
+    # .suplex/docs/discrepancy_log.md, 2026-07-22 fixed-point-collapse entries).
+    # Default 1.0 reproduces the original, unweighted energy exactly.
+    pc_temporal_precision: float = 1.0        # >1 costs temporal inconsistency more
     # How PC's local updates become a step. "adam" matches the BPTT arm, so a
     # PC-vs-BPTT difference is attributable to the rule rather than to the optimizer;
     # "sgd" is the pure local rule Millidge runs, under which PC's recurrent update is

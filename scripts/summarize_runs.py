@@ -33,7 +33,7 @@ RUN_VARIANTS = [
     ("bptt", Path("results/runs/bptt"), Path("results/activations")),
     ("pc_steps20", Path("results/runs/pc"), Path("results/activations/pc_steps20")),
     ("pc_steps100", Path("results/runs/pc_steps100"), Path("results/activations/pc_steps100")),
-    ("rflo", Path("results/runs/rflo"), Path("results/activations/rflo")),
+    ("rflo", Path("results/runs/rflo"), Path("results/activations")),
 ]
 
 
