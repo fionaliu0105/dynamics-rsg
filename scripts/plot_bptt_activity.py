@@ -140,7 +140,7 @@ def main(argv=None) -> int:
     training_loss_figure(losses, out_dir=out_dir)
     unit_activity_figure(
         states_np[labels.index(f"{conditions[0].prior}/{conditions[0].ts}ms/{conditions[0].effector}")],
-        dt=cfg.dt, out_dir=out_dir, title=f"unit activity: {labels[0]}",
+        dt=cfg.dt, out_dir=out_dir, condition_label=labels[0],
     )
     output_vs_target_figure(
         outputs_np, target.numpy(), dt=cfg.dt, labels=labels,
