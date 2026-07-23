@@ -575,7 +575,7 @@ def dsa_distance(op_a: Operators, op_b: Operators, cfg: Optional[InputDSAConfig]
 # always load the full set and subset AFTER preprocessing (never preprocess a band).
 
 
-def _load_system(store, model: str, seed: int, preprocessor) -> Tuple[np.ndarray, np.ndarray]:
+def load_system(store, model: str, seed: int, preprocessor) -> Tuple[np.ndarray, np.ndarray]:
     """Read the 20 canonical conditions for (model, seed) and run the shared warp.
 
     Trajectories are kept ragged (time length varies with ts/tp) and handed to the
@@ -625,8 +625,8 @@ def stage3_bptt_vs_pc(
     cfg = cfg or InputDSAConfig()
     out: Dict[int, Dict[str, float]] = {}
     for seed in seeds:
-        s_a, u_a = _load_system(store, model_a, seed, preprocessor)
-        s_b, u_b = _load_system(store, model_b, seed, preprocessor)
+        s_a, u_a = load_system(store, model_a, seed, preprocessor)
+        s_b, u_b = load_system(store, model_b, seed, preprocessor)
         if conditions is not None:
             s_a, u_a = _subset(s_a, u_a, conditions)
             s_b, u_b = _subset(s_b, u_b, conditions)
@@ -663,7 +663,7 @@ def stage4_model_to_dmfc(
     out: Dict[Tuple[str, int], Dict[str, float]] = {}
     for model in models:
         for seed in seeds:
-            s, u = _load_system(store, model, seed, preprocessor)
+            s, u = load_system(store, model, seed, preprocessor)
             if conditions is not None:
                 s, u = _subset(s, u, conditions)
             op = fit_operators(s, u, cfg)

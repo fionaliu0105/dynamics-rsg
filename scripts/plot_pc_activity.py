@@ -116,7 +116,7 @@ def main(argv=None) -> int:
     first_cond = next(iter(records))
     unit_activity_figure(
         records[first_cond].states, dt=cfg.dt, out_dir=out_dir,
-        name=f"{prefix}_unit_activity", title=f"{prefix} unit activity: {first_cond.label}",
+        name=f"{prefix}_unit_activity", condition_label=first_cond.label,
     )
 
     outputs = np.stack([rec.meta["outputs"] for rec in records.values()])

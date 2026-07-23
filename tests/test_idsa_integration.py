@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import numpy as np
 
-from src.compare.idsa import InputDSAConfig, across_ts, _load_system, stage3_bptt_vs_pc
+from src.compare.idsa import InputDSAConfig, across_ts, load_system, stage3_bptt_vs_pc
 from src.conditions import CONDITIONS
 from src.preprocess.pipeline import PreprocessConfig, Preprocessor
 from src.store import ActivationStore, Record
@@ -60,7 +60,7 @@ def test_stage3_through_real_preprocessor():
             assert all(np.isfinite(v) for v in dist.values()), (seed, dist)
 
         # states and inputs come out on the same preprocessed time base (what iDSA needs)
-        s, u = _load_system(store, "bptt", 0, pre)
+        s, u = load_system(store, "bptt", 0, pre)
         assert s.shape == (20, 15, 6), s.shape
         assert u.shape == (20, 15, N_IN), u.shape
         assert s.shape[1] == u.shape[1]

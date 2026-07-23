@@ -73,6 +73,23 @@ def build_rdm(activity: np.ndarray, metric: str = "correlation") -> np.ndarray:
     return rdm
 
 
+def build_rdms_over_time(activity: np.ndarray, metric: str = "correlation") -> np.ndarray:
+    """One RDM per time bin from a preprocessed [cond, time, k] tensor -> [time, 20, 20].
+
+    Time-resolved geometry (cf. rsatoolbox's temporal-RSA demo): ``build_rdm`` flattens
+    the whole [time, k] pattern into one vector per condition, collapsing time into a
+    single RDM. Feeding it one time bin at a time instead (a [cond, 1, k] slice is
+    already a valid input) gives a geometry-over-time curve with no new distance math.
+    """
+    activity = np.asarray(activity, dtype=np.float64)
+    if activity.ndim != 3 or activity.shape[0] != N_CONDITIONS:
+        raise ValueError(
+            f"activity must be [{N_CONDITIONS}, time, k], got shape {activity.shape}"
+        )
+    T = activity.shape[1]
+    return np.stack([build_rdm(activity[:, t:t + 1, :], metric=metric) for t in range(T)], axis=0)
+
+
 def rdm_distance(
     model_rdm: np.ndarray, ref_rdm: np.ndarray, method: str = "spearman"
 ) -> float:
