@@ -32,8 +32,10 @@
 #   sbatch --array=0-9 --time=12:00:00 scripts/slurm/train.sbatch
 #
 # Override rule/regime/task-source/run-dir via environment (must both set the var
-# AND list it in --export, or use --export=ALL to pass your whole environment):
+# AND list it in --export, or use --export=ALL to pass your whole environment).
+# RULE takes bptt, pc, or rflo:
 #   RULE=bptt REGIME=faithful sbatch --array=0-9 --export=ALL,RULE,REGIME scripts/slurm/train.sbatch
+#   RULE=rflo REGIME=faithful sbatch --array=0-9 --export=ALL,RULE,REGIME scripts/slurm/train.sbatch
 #
 # Or pin exact hyperparameters from a config file instead of --regime/--rule
 # (matches scripts/run_sweep.sh's --config-dir convention; CONFIG wins if set):

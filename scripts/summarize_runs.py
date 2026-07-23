@@ -5,6 +5,12 @@ retrains") — does not touch checkpoints or retrain anything. Meant to be the
 single source of truth a results notebook reads from, rather than every
 notebook recomputing its own per-seed loop over metrics.json.
 
+CAVEAT on the loss columns: ``best_loss``/``final_loss`` are comparable between the
+bptt and rflo variants (both report ``trainer.masked_mse``), but the pc variants
+report ``0.5 *`` that quantity, so PC sits at half scale. Do not read a PC-vs-other
+loss gap off this table as a performance difference. The similarity metrics, not the
+training loss, are what the study compares across rules.
+
 Usage::
 
     python scripts/summarize_runs.py --out results/runs_summary.csv
@@ -20,13 +26,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-# (label, run_dir, activation_store_dir) — the three current sweep conditions.
+# (label, run_dir, activation_store_dir) — the current sweep conditions.
 # activation_store_dir is the root passed to ActivationStore; seeds missing an
 # entry there simply won't have activation-derived figures, not an error.
 RUN_VARIANTS = [
     ("bptt", Path("results/runs/bptt"), Path("results/activations")),
     ("pc_steps20", Path("results/runs/pc"), Path("results/activations/pc_steps20")),
     ("pc_steps100", Path("results/runs/pc_steps100"), Path("results/activations/pc_steps100")),
+    ("rflo", Path("results/runs/rflo"), Path("results/activations/rflo")),
 ]
 
 

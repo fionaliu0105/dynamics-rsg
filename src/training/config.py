@@ -26,7 +26,7 @@ from typing import Dict, List, Literal
 
 import yaml
 
-Rule = Literal["bptt", "pc"]
+Rule = Literal["bptt", "pc", "rflo"]
 
 
 @dataclass
@@ -34,7 +34,7 @@ class Config:
     """Everything a single run needs. One seed per invocation (see the trainer)."""
 
     # --- identity ---------------------------------------------------------------
-    rule: Rule = "bptt"                       # "bptt" or "pc"; selects the learning loop
+    rule: Rule = "bptt"                       # "bptt" | "pc" | "rflo"; selects the learning loop
     seed: int = 0                             # THIS run's seed (sweep = many of these)
 
     # --- network / integration regime -------------------------------------------
@@ -104,6 +104,25 @@ class Config:
     # enough to unfreeze J without needing pc_optimizer="adam" at all.
     pc_clip_mode: str = "global_norm"         # "global_norm" | "elementwise"
 
+    # --- RFLO (ignored unless rule == "rflo") -----------------------------------
+    # Random Feedback Local Online learning (Murray 2019). Third arm on the same
+    # architecture: local in time AND space, single-pass online.
+    # How output error reaches the recurrent population. "random" is RFLO proper --
+    # fixed random feedback, no weight transport, and what defines this arm.
+    # "symmetric" substitutes w_o itself; it exists so the alignment diagnostic can
+    # isolate the temporal (trace-truncation) approximation from the spatial
+    # (feedback-alignment) one. It is a validation tool, NOT a study condition.
+    rflo_feedback: str = "random"             # "random" | "symmetric"
+    # Scale of the random feedback matrix. 0 means "use 1/sqrt(N)", roughly the scale
+    # w_o reaches during training. Feedback scale trades off learning-signal magnitude
+    # against how fast alignment develops, so it is a knob rather than a constant.
+    rflo_feedback_scale: float = 0.0          # 0 -> 1/sqrt(N)
+    # Same scientific choice as pc_optimizer, and made the same way: "adam" holds the
+    # step-size policy fixed across all three arms so a difference is attributable to
+    # the rule; "sgd" is the pure local rule.
+    rflo_optimizer: str = "adam"              # "adam" | "sgd"
+    rflo_clip_mode: str = "global_norm"       # "global_norm" | "elementwise"
+
     # --- sweep bookkeeping ------------------------------------------------------
     n_seeds: int = 10                         # default seeds per (rule x sweep-point)
 
@@ -163,7 +182,7 @@ class Config:
 
 
 def sweep_configs(
-    rules: List[Rule] = ("bptt", "pc"),
+    rules: List[Rule] = ("bptt", "pc", "rflo"),
     pc_inference_steps: List[int] = (5, 20, 100),
     n_seeds: int = 10,
     regime: str = "faithful",
@@ -171,8 +190,8 @@ def sweep_configs(
 ) -> List[Config]:
     """Expand the (rule x inference-step x seed) grid into one Config per run.
 
-    The inference-step axis only varies PC; BPTT gets a single point. This is the
-    grid the team runs on GPUs. See ``docs/implementation_plan.md`` 3.2.
+    The inference-step axis only varies PC; BPTT and RFLO each get a single point.
+    This is the grid the team runs on GPUs. See ``docs/implementation_plan.md`` 3.2.
     """
     make = Config.faithful if regime == "faithful" else Config.reduced
     configs: List[Config] = []

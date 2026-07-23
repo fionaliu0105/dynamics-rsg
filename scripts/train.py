@@ -8,6 +8,7 @@ Examples::
 
     python scripts/train.py --config configs/bptt.yaml --seed 0
     python scripts/train.py --config configs/pc.yaml --seed $SLURM_ARRAY_TASK_ID
+    python scripts/train.py --config configs/rflo.yaml --seed 0
     python scripts/train.py --regime reduced --rule pc --seed 3 --dry-run
 """
 
@@ -49,10 +50,10 @@ def build_config(args) -> Config:
 
 
 def main(argv=None) -> int:
-    p = argparse.ArgumentParser(description="Train one RSG RNN seed (BPTT or PC).")
+    p = argparse.ArgumentParser(description="Train one RSG RNN seed (BPTT, PC, or RFLO).")
     p.add_argument("--config", type=str, help="path to a run config YAML")
     p.add_argument("--regime", choices=["reduced", "faithful"], default="reduced")
-    p.add_argument("--rule", choices=["bptt", "pc"])
+    p.add_argument("--rule", choices=["bptt", "pc", "rflo"])
     p.add_argument("--seed", type=int)
     p.add_argument("--task-source", choices=["neurogym", "standalone"],
                    help="task data generator (default from config: neurogym)")

@@ -93,3 +93,13 @@ def test_train_one_seed_tiny_pc(tmp_path):
     assert len(metrics["losses"]) == 2
     assert len(metrics["behavior_by_condition"]) == 20
     assert (run_dir / "activations" / "pc" / "seed_0004").exists()
+
+
+def test_train_one_seed_tiny_rflo(tmp_path):
+    run_dir = tmp_path / "rflo"
+    train_one_seed(_tiny_cfg("rflo"), run_dir)
+    metrics = json.loads((run_dir / "metrics.json").read_text())
+    assert np.isfinite(metrics["losses"]).all()
+    assert len(metrics["losses"]) == 2
+    assert len(metrics["behavior_by_condition"]) == 20
+    assert (run_dir / "activations" / "rflo" / "seed_0004").exists()

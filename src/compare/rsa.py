@@ -28,6 +28,7 @@ without it in the ABI-broken base env.)
 
 from __future__ import annotations
 
+import itertools
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -153,14 +154,17 @@ def rsa_distances_per_seed(
         systems_by_rule: ``{rule: {seed: preprocessed [cond, time, k]}}``.
         reference: a preprocessed [cond, time, k] tensor (e.g. DMFC). If given, each
             model seed is compared to the reference RDM (model-to-DMFC). If None, the
-            two rules are compared to each other seed-by-seed (rule-vs-rule): seeds are
+            rules are compared to each other seed-by-seed (rule-vs-rule): seeds are
             paired by their shared seed id.
         method, metric: passed to rdm_distance / build_rdm.
 
     Returns:
         ``{rule: [per-seed distances]}`` — the array src.viz.figures.summary_distance
-        _figure consumes. For rule-vs-rule the single pairwise series is keyed by the
-        rule pair, e.g. ``"bptt_vs_pc"``.
+        _figure consumes. For rule-vs-rule the series are keyed by rule PAIR, one entry
+        per unordered pair in sorted order: two rules give ``{"bptt_vs_pc": [...]}``,
+        three give ``bptt_vs_pc``, ``bptt_vs_rflo`` and ``pc_vs_rflo``. Enumerating all
+        pairs (rather than requiring exactly two rules) is what lets a third learning
+        rule enter this diagnostic without callers having to invoke it pairwise.
     """
     if reference is not None:
         ref_rdm = build_rdm(reference, metric=metric)
@@ -173,21 +177,25 @@ def rsa_distances_per_seed(
             out[rule] = dists
         return out
 
-    # rule-vs-rule: pair the two rules by shared seed id.
+    # rule-vs-rule: every unordered pair of rules, paired by shared seed id.
     rules = sorted(systems_by_rule)
-    if len(rules) != 2:
+    if len(rules) < 2:
         raise ValueError(
-            f"rule-vs-rule needs exactly 2 rules, got {rules}; pass a reference for "
+            f"rule-vs-rule needs at least 2 rules, got {rules}; pass a reference for "
             f"model-to-reference instead"
         )
-    ra, rb = rules
-    shared = sorted(set(systems_by_rule[ra]) & set(systems_by_rule[rb]))
-    dists = []
-    for seed in shared:
-        rdm_a = build_rdm(systems_by_rule[ra][seed], metric=metric)
-        rdm_b = build_rdm(systems_by_rule[rb][seed], metric=metric)
-        dists.append(rdm_distance(rdm_a, rdm_b, method=method))
-    return {f"{ra}_vs_{rb}": dists}
+    # Cache each seed's RDM so a rule appearing in several pairs is only built once.
+    rdms = {
+        rule: {seed: build_rdm(system, metric=metric) for seed, system in by_seed.items()}
+        for rule, by_seed in systems_by_rule.items()
+    }
+    out: Dict[str, List[float]] = {}
+    for ra, rb in itertools.combinations(rules, 2):
+        shared = sorted(set(rdms[ra]) & set(rdms[rb]))
+        out[f"{ra}_vs_{rb}"] = [
+            rdm_distance(rdms[ra][seed], rdms[rb][seed], method=method) for seed in shared
+        ]
+    return out
 
 
 # --- numpy stats helpers -------------------------------------------------------

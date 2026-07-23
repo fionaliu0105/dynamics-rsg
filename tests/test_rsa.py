@@ -108,6 +108,25 @@ def test_per_seed_rule_vs_rule():
     print("test_per_seed_rule_vs_rule OK")
 
 
+def test_per_seed_rule_vs_rule_three_rules():
+    """A third learning rule must produce all three pairs, not silently drop one.
+
+    The two-rule key stays exactly as it was, so existing outputs keep their meaning.
+    """
+    rng = np.random.default_rng(7)
+    systems = {
+        "bptt": {s: _random_activity(rng) for s in range(4)},
+        "pc": {s: _random_activity(rng) for s in range(4)},
+        "rflo": {s: _random_activity(rng) for s in range(4)},
+    }
+    out = rsa_distances_per_seed(systems, reference=None)
+    assert set(out) == {"bptt_vs_pc", "bptt_vs_rflo", "pc_vs_rflo"}
+    for pair, values in out.items():
+        assert len(values) == 4, pair
+        assert all(isinstance(v, float) for v in values), pair
+    print("test_per_seed_rule_vs_rule_three_rules OK")
+
+
 def test_canonical_order_respected():
     # Build activity where each condition i is a distinct constant pattern; the RDM
     # must then reflect the identity of condition i at row i (canonical order).
