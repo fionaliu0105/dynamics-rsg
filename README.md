@@ -3,12 +3,12 @@
 **Do learning rules leave a measurable signature on latent geometry and dynamics
 in a Bayesian timing task?**
 
-We train one RNN architecture under two learning rules, backpropagation-through-time
-(BPTT) and predictive coding (PC), on the two-prior Ready-Set-Go (RSG) interval-timing
-task, and ask whether the *rule* changes how closely a network's latent **geometry**
-(RSA) and **input-driven dynamics** (iDSA) resemble macaque DMFC. The architecture is
-held fixed across the two arms, so any difference is attributable to the learning rule
-rather than the architecture.
+We train one RNN architecture under different learning rules (backpropagation-through-time
+(BPTT), predictive coding (PC), and RFLO) on the two-prior Ready-Set-Go (RSG)
+interval-timing task, and ask whether the *rule* changes how closely a network's latent
+**geometry** (RSA) and **input-driven dynamics** (iDSA) resemble macaque DMFC. The
+architecture is held fixed across the arms, so any difference is attributable to the
+learning rule rather than the architecture.
 
 - **Task:** two-prior RSG, extending NeuroGym's `ReadySetGo-v0`.
 - **Neural target:** macaque DMFC recordings (Sohn et al. 2019), via the Neural Latents
@@ -21,13 +21,87 @@ rather than the architecture.
 > load-bearing), and [`docs/implementation_plan.md`](docs/implementation_plan.md) for
 > the full build guide, the locked decisions, and the team division of labor.
 
+## Progress report (July 2026)
+
+### Research questions
+
+1. How do BPTT and predictive-coding updates shape the latent geometry (RSA) and
+   input-driven dynamics (iDSA) of matched RNNs trained on Ready-Set-Go?
+2. How does interval length and prior (short versus long) change the learning-rule
+   signature in the model dynamics?
+3. Which learning rule, if either, produces geometry and dynamics closer to DMFC, and
+   does that depend on the prior condition?
+
+### What we built
+
+The pipeline runs end to end: load or generate the task data, train the RNNs, run RSA and
+iDSA against DMFC across every seed, and plot each stage. We load the macaque DMFC
+recordings from the Neural Latents Benchmark (DANDI 000130) with `nlb_tools`, and drive
+the models with NeuroGym's ReadySetGo task so the model and the animal see matched
+statistics. The RSA and iDSA comparisons reuse the InputDSA/DSA reference code.
+
+One RNN architecture is held fixed and only the learning rule changes. The main contrast
+is BPTT versus predictive coding (PC). We added RFLO as a third arm so that locality
+becomes a graded axis (BPTT is nonlocal, PC is local in space, RFLO is local in space and
+time) instead of a two-way switch. An untrained network is kept as a control floor.
+
+The BPTT model is a continuous-time leaky-tanh RNN following Sohn et al. 2019. It is driven
+by the Ready/Set pulses and tonic prior/effector context, unrolled through time, and read
+out through an effector-gated head trained with Adam on a masked MSE loss against a ramping
+target over the production epoch. We validated it on a diagnostic pilot over the full
+20-condition set (2 priors x 5 ts x 2 effectors). The PC arm keeps the same architecture
+and readout and replaces the update rule.
+
+### What we are seeing
+
+BPTT and RFLO learn the task. PC does not, and its failure mode is specific: the training
+loss drops close to zero, but the network barely times. Panel A below is the count of valid
+produced intervals per seed by arm, and PC at 20 inference steps is flat at zero. Panel B
+shows that low training loss does not predict valid behavior, so the loss is hiding the
+failure.
+
+![Behavior and loss by arm](results/figures/results_summary.png)
+
+Before asking which rule is closest to the brain, we check whether there is any
+learning-rule signature at all. The arm-by-arm RSA matrix uses the within-rule,
+seed-to-seed distance on the diagonal as a null. BPTT and PC differ well past that null
+(BPTT-vs-PC 0.578 against a within-BPTT 0.203), so the difference is real. BPTT and RFLO do
+not separate from it.
+
+![RSA within vs between](results/signature/figures/rq1_rsa_within_between.png)
+
+On distance to DMFC, RFLO and BPTT sit closest on both RSA and iDSA. Both PC arms land at or
+past the untrained control, so adding PC inference steps did not help. RSA means: RFLO 0.241,
+BPTT 0.264, PC 20-step 0.346, untrained 0.389, PC 100-step 0.442.
+
+![RSA distance to DMFC](results/rsa/summary_dmfc_comparison.png)
+
+The clearest single result is at ts=800, the one interval that appears under both priors, so
+the same stimulus carries opposite context. Only BPTT holds the two priors apart (0.292,
+above DMFC's own 0.148). RFLO, PC, and the untrained net are all near zero. Overall
+brain-similarity and prior coding come apart: RFLO matches DMFC about as well as BPTT does
+overall, yet it does not encode the prior.
+
+![Prior separation at ts=800](results/signature/figures/rq2_overlap_800.png)
+
+For the slide-by-slide walkthrough of every figure with the numbers and a line to say for
+each, see [`presentation_results.md`](presentation_results.md).
+
+### Next steps
+
+The immediate blocker is the PC arm, where the loss converges but the timing behavior is
+missing. We are tracing where the behavior gets lost and adjusting the implementation. If PC
+cannot be made to time, we will replace it with another local rule, most likely STDP, as the
+comparison against BPTT. Once every arm learns the task we will rerun the full comparison,
+finalize the figures, and build and rehearse the final presentation.
+
 ## Status
 
-The foundation is built and tested; the domain modules are stubs with an
-interface + "definition of done" + reference in each docstring, ready for the team to
-implement (see the division of labor in the plan). "Implemented" below means it runs
-and is covered by `tests/test_foundation.py`; "stub" means the contract is defined and
-the body raises `NotImplementedError`.
+The pipeline is implemented and has produced the full set of results in the progress
+report above. The table tracks module-level state. "Implemented" means it runs and is
+covered by `tests/test_foundation.py`; the PC arm runs but does not yet learn the timing
+task (see the progress report), which is the current open problem rather than a missing
+module.
 
 | Area | File | State |
 | --- | --- | --- |
@@ -35,7 +109,7 @@ the body raises `NotImplementedError`.
 | Run config + sweep grid | `src/training/config.py` | implemented |
 | Activation store | `src/store/` | implemented (`.npz` backend) |
 | Model interface | `src/models/base.py` | implemented |
-| Plotting harness | `src/viz/figures.py` | harness implemented; panels stubbed |
+| Plotting harness | `src/viz/figures.py` | implemented (shared palette in `src/viz/palette.py`) |
 | Training entry point | `scripts/train.py` | implemented (BPTT + PC, checkpoint/resume, activation export) |
 | Task, BPTT, PC, preprocess, RSA, iDSA, behavior, neural loader, trainer loop | `src/task`, `src/models`, `src/preprocess`, `src/compare`, `src/behavior`, `src/data`, `src/training/trainer.py` | implemented |
 
