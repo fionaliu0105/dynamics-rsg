@@ -153,6 +153,32 @@ interactive run are the same entry point). The expensive full sweeps run on the 
 GPUs; `scripts/slurm/` (thin sbatch wrappers) is a `TODO(cluster)` until partition /
 account / wall-time are known.
 
+## Results figures
+
+Colors are defined once, in `src/viz/palette.py`. `RDM_CMAP` is the blue-to-red ramp for
+every heatmap (near is blue, far is red); `ARM_COLORS` gives one fixed color per arm (BPTT
+blue, PC(20) yellow, PC(100) orange, RFLO red, untrained gray). Every function in
+`src/viz/figures.py` imports from there, so a color change happens in one place.
+
+Two plotting drivers read saved metrics only and retrain nothing:
+
+```bash
+# RQ1-RQ3 figures from cached metrics (results/signature/signature.json).
+# Also creates the two RQ3 headline figures, results/{rsa,idsa}/summary_dmfc_comparison.png:
+python scripts/plot_slide_figures.py
+
+# Behavior and best-loss two-panel figure from results/runs_summary.csv:
+python scripts/plot_results_summary.py
+```
+
+For the slide-by-slide walkthrough (what each figure shows, the key number, and a line to
+say), see [`presentation_results.md`](presentation_results.md).
+
+Still pending: the Setup RDM heatmap (`results/figures/dmfc/dmfc_rdm_heatmap.png`) and the
+per-arm RDM galleries are not in the shared palette yet, because they need the raw 20x20
+condition RDMs, i.e. `data/processed/`. Wherever that data is present, rerun
+`scripts/run_rsa_geometry.py` and they pick up `RDM_CMAP` automatically.
+
 ## Key invariants (from `AGENTS.md`)
 
 These are non-negotiable; breaking one silently invalidates the comparison:
