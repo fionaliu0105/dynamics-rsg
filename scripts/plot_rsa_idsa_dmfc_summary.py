@@ -27,6 +27,13 @@ IDSA_DIR = Path("results/idsa")
 # control a distance-to-DMFC bar has no floor: a random RNN with this architecture
 # and this input drive already sits at some finite distance from DMFC.
 ARMS = ["untrained", "bptt", "pc_steps20", "pc_steps100", "rflo"]
+LABELS = {
+    "untrained": "Untrained",
+    "bptt": "BPTT",
+    "pc_steps20": "PC (20 steps)",
+    "pc_steps100": "PC (100 steps)",
+    "rflo": "RFLO",
+}
 
 
 def main() -> int:
@@ -47,13 +54,17 @@ def main() -> int:
 
     rsa_path = summary_distance_figure(
         rsa_distances, out_dir=RSA_DIR, ceilings=ceilings,
-        title_suffix="distance to DMFC, per seed",
+        title_suffix="model-to-DMFC comparison",
         name="summary_dmfc_comparison",
+        labels=LABELS,
+        ylabel="Distance to DMFC",
     )
     idsa_path = summary_distance_figure(
         idsa_distances, out_dir=IDSA_DIR,
-        title_suffix="distance to DMFC, per seed (no ceiling: iDSA noise ceiling not computed)",
+        title_suffix="model-to-DMFC comparison",
         name="summary_dmfc_comparison",
+        labels=LABELS,
+        ylabel="Distance to DMFC",
     )
     print(f"[plot_rsa_idsa_dmfc_summary] wrote {rsa_path} and {idsa_path}")
     return 0
