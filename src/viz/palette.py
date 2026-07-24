@@ -21,9 +21,14 @@ from matplotlib.colors import LinearSegmentedColormap
 # Five anchor hues (the provided scheme): blue -> light blue -> yellow -> orange -> red.
 _ANCHORS = ["#5271AE", "#70ACDE", "#F5CC7D", "#FFA660", "#D85B59"]
 
-# Continuous ramp for heatmaps (RDMs, within/between matrices). Sequential reading:
+# Continuous ramp for condition-RDM heatmaps and galleries. Sequential reading:
 # low value = blue, high value = red.
 RDM_CMAP = LinearSegmentedColormap.from_list("rsg_blue_red", _ANCHORS, N=256)
+
+# Monochrome blue ramp for the arm-by-arm within/between distance matrices. Light blue
+# is a small distance (near), dark blue is a large distance (far).
+_BLUES = ["#C6EAF3", "#8FD3ED", "#5AA9CD", "#357AA7", "#0E4775"]
+MATRIX_CMAP = LinearSegmentedColormap.from_list("rsg_blues", _BLUES, N=256)
 
 # Categorical arm colors. Keys are the canonical arm/rule labels used across the
 # pipeline; PC's two step-counts sit next to each other in the warm range on purpose.

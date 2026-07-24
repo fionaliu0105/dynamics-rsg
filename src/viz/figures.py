@@ -31,6 +31,7 @@ from src.viz.palette import (  # noqa: E402  shared figure colors
     ARM_COLORS,
     DELTA_NEG,
     DELTA_POS,
+    MATRIX_CMAP,
     PRIOR_COLORS,
     RDM_CMAP,
     arm_color,
@@ -653,17 +654,21 @@ def within_between_matrix_figure(
     disp = [labels.get(a, a) if labels else a for a in arms]
 
     fig, ax = plt.subplots(figsize=(1.55 * len(arms) + 2.4, 1.35 * len(arms) + 2.0))
-    im = ax.imshow(mean, cmap=RDM_CMAP)
+    im = ax.imshow(mean, cmap=MATRIX_CMAP)
     ax.set_xticks(range(len(arms)))
     ax.set_yticks(range(len(arms)))
     ax.set_xticklabels(disp, rotation=30, ha="right", fontsize=9)
     ax.set_yticklabels(disp, fontsize=9)
-    vmid = np.nanmean(mean)
+    # MATRIX_CMAP runs light (low) to dark (high), so white text goes on the dark
+    # (high-value) cells. Threshold on the normalized value, not the mean.
+    finite = mean[np.isfinite(mean)]
+    vlo, vhi = (finite.min(), finite.max()) if finite.size else (0.0, 1.0)
+    span = vhi - vlo or 1.0
     for i in range(len(arms)):
         for j in range(len(arms)):
             if not np.isfinite(mean[i, j]):
                 continue
-            face = "white" if mean[i, j] < vmid else "black"
+            face = "white" if (mean[i, j] - vlo) / span > 0.55 else "black"
             weight = "bold" if i == j else "normal"
             ax.text(j, i, f"{mean[i, j]:.3f}", ha="center", va="center",
                     color=face, fontsize=9, fontweight=weight)

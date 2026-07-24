@@ -6,9 +6,10 @@ architecture is fixed across arms (BPTT, PC at 20 and 100 inference steps, RFLO,
 untrained control), so any difference is the rule, not the network.
 
 Each figure below has a one-line "what it shows", the number that matters, and a sentence
-you can say out loud. All arm colors and the heatmap ramp come from one shared scheme
-(`src/viz/palette.py`): BPTT blue, PC(20) yellow, PC(100) orange, RFLO red, untrained gray;
-heatmaps run blue (near) to red (far).
+you can say out loud. Colors come from one shared scheme (`src/viz/palette.py`). Arm colors:
+BPTT blue, PC(20) yellow, PC(100) orange, RFLO red, untrained gray. The RQ1 within/between
+matrices use shades of blue (light is near, dark is far); the Setup condition RDMs run blue
+(near) to red (far).
 
 ## If you only have 60 seconds
 
