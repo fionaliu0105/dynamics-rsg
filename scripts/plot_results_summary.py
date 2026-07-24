@@ -3,14 +3,14 @@
 Reads the per-seed aggregate table written by ``scripts/summarize_runs.py``
 (``results/runs_summary.csv``) and produces a two-panel summary figure:
 
-- **Panel A** — per-seed valid-response counts by variant. Each point is one
-  seed's ``valid_tp_count`` (out of ``valid_tp_total`` = 20 test conditions);
-  the horizontal marker is the per-variant mean. Shows which learning
-  rules / inference-step regimes actually produce valid RSG timed responses.
-- **Panel B** — best training loss (log axis) versus valid-response count,
-  colored by variant. Makes the dissociation explicit: low training loss does
-  not imply valid timing behavior (e.g. ``pc_steps20`` reaches low loss yet
-  yields zero valid responses).
+- Panel A: per-seed valid-response counts by variant. Each point is one seed's
+  ``valid_tp_count`` (out of ``valid_tp_total`` = 20 test conditions), and the
+  horizontal marker is the per-variant mean. This shows which learning rules and
+  inference-step regimes actually produce valid RSG timed responses.
+- Panel B: best training loss (log axis) against valid-response count, colored by
+  variant. This makes the dissociation explicit: low training loss does not imply
+  valid timing behavior (for example, ``pc_steps20`` reaches low loss but yields
+  zero valid responses).
 
 Consistent with AGENTS.md: this reads saved metrics only and never retrains or
 re-extracts. Non-interactive backend; writes files under ``results/figures/``.
@@ -28,10 +28,16 @@ import matplotlib
 
 matplotlib.use("Agg")  # no display on a compute node (AGENTS.md execution contract)
 
+import sys
+
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from src.viz.palette import ARM_COLORS  # shared figure colors
 
 SUMMARY_CSV = Path("results/runs_summary.csv")
 OUT_DIR = Path("results/figures")
@@ -47,14 +53,8 @@ VARIANT_LABELS = {
     "pc_steps20": "PC\n(20 steps)",
     "pc_steps100": "PC\n(100 steps)",
 }
-# One restrained palette: a neutral/cool family for the working rules and a
-# muted red reserved for the regime that fails to produce valid responses.
-VARIANT_COLORS = {
-    "bptt": "#3B6EA5",       # blue
-    "rflo": "#E08214",       # amber
-    "pc_steps20": "#B2182B",  # red — the failure regime
-    "pc_steps100": "#4D9221",  # green
-}
+# Use the shared colors (src/viz/palette.py) so this slide matches the RQ figures.
+VARIANT_COLORS = ARM_COLORS
 
 
 def _style() -> None:

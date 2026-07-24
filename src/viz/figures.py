@@ -27,6 +27,15 @@ matplotlib.use("Agg")  # headless: pick the backend BEFORE importing pyplot
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 
+from src.viz.palette import (  # noqa: E402  shared figure colors
+    ARM_COLORS,
+    DELTA_NEG,
+    DELTA_POS,
+    PRIOR_COLORS,
+    RDM_CMAP,
+    arm_color,
+)
+
 RESULTS_DIR = Path("results/figures")
 
 
@@ -54,7 +63,7 @@ def training_loss_curve(losses: Sequence[float], rule: str, seed: int, out_dir: 
 def behavior_panel(eval_records: Sequence[dict], rule: str, seed: int, out_dir: Path = RESULTS_DIR) -> Path:
     """Plot produced interval against sample interval, grouped by prior."""
     fig, ax = plt.subplots(figsize=(6, 4))
-    colors = {"short": "#3b6ea8", "long": "#b45f3c"}
+    colors = PRIOR_COLORS
     for prior in sorted({str(r["prior"]) for r in eval_records}):
         rows = [r for r in eval_records if r["prior"] == prior]
         ts = np.asarray([r["ts"] for r in rows], dtype=float)
@@ -81,6 +90,7 @@ def summary_distance_figure(
     ceilings: Optional[Mapping[str, Tuple[float, float]]] = None,
     title_suffix: str = "distance to DMFC",
     name: str = "summary_distance_to_dmfc",
+    labels: Optional[Mapping[str, str]] = None,
 ) -> Path:
     """THE headline figure: distance-to-DMFC per rule, per metric, with seed spread.
 
@@ -96,6 +106,9 @@ def summary_distance_figure(
             ``src.compare.rsa.noise_ceiling``). Omitted metrics get no band.
         title_suffix: appended to each panel's title as ``f"{metric}: {title_suffix}"``.
         name: output filename (without extension).
+        labels: optional ``{rule: display name}`` for the x-axis tick labels, so a
+            slide can read "PC (100 steps)" instead of the raw ``pc_steps100`` key.
+            Rules without an entry keep their raw key.
 
     Draws mean +/- spread over seeds per rule, grouped by metric. This reads saved
     metrics only. Reusable as-is; tracks feed it their per-seed distance arrays.
@@ -120,10 +133,13 @@ def summary_distance_figure(
             if vals.size:
                 lo_ci, hi_ci = _bootstrap_ci(vals)
                 err = np.array([[vals.mean() - lo_ci], [hi_ci - vals.mean()]])
-                ax.bar(i, vals.mean(), yerr=err, capsize=5, label=rule)
+                ax.bar(i, vals.mean(), yerr=err, capsize=5,
+                       label=labels.get(rule, rule) if labels else rule,
+                       color=arm_color(rule))
                 ax.scatter(np.full(vals.size, i), vals, color="k", s=12, zorder=3)
         ax.set_xticks(range(len(rules)))
-        ax.set_xticklabels(rules, rotation=20, ha="right")
+        ax.set_xticklabels([labels.get(r, r) if labels else r for r in rules],
+                           rotation=20, ha="right")
         ax.set_title(f"{metric}: {title_suffix}")
         ax.set_ylabel("distance (points = seeds, bars = 95% bootstrap CI)")
         if ceilings and metric in ceilings:
@@ -195,7 +211,7 @@ def behavior_slope_figure(
     slopes = slopes_by_prior(ts, tp, labels)
 
     fig, ax = plt.subplots(figsize=(5, 4))
-    color = {"short": "tab:blue", "long": "tab:red"}
+    color = PRIOR_COLORS
     finite_ts = ts[np.isfinite(ts)]
     if finite_ts.size:
         lo, hi = finite_ts.min(), finite_ts.max()
@@ -245,7 +261,7 @@ def rdm_heatmap(
     rdm = np.asarray(rdm, dtype=float)
     labels = [c.label for c in CONDITIONS]
     fig, ax = plt.subplots(figsize=(7, 6))
-    im = ax.imshow(rdm, cmap="viridis", aspect="equal")
+    im = ax.imshow(rdm, cmap=RDM_CMAP, aspect="equal")
     ax.set_xticks(range(len(labels)))
     ax.set_yticks(range(len(labels)))
     ax.set_xticklabels(labels, rotation=90, fontsize=6)
@@ -305,7 +321,7 @@ def rdm_gallery_figure(
         for j in range(n_cols):
             ax = axes[i][j]
             if j < len(rdms):
-                im = ax.imshow(np.asarray(rdms[j]), cmap="viridis", vmin=vmin, vmax=vmax, aspect="equal")
+                im = ax.imshow(np.asarray(rdms[j]), cmap=RDM_CMAP, vmin=vmin, vmax=vmax, aspect="equal")
                 ax.set_xticks([])
                 ax.set_yticks([])
                 if j == 0:
@@ -361,7 +377,7 @@ def mds_embedding_figure(
     from src.conditions import CONDITIONS  # local import keeps this module import-light
 
     labels = list(rdms_by_label)
-    color = {"short": "#3b6ea8", "long": "#b45f3c"}
+    color = PRIOR_COLORS
     marker = {"eye": "o", "hand": "^"}
 
     fig, axes = plt.subplots(1, len(labels), figsize=(4.2 * len(labels), 4.2), squeeze=False)
@@ -637,7 +653,7 @@ def within_between_matrix_figure(
     disp = [labels.get(a, a) if labels else a for a in arms]
 
     fig, ax = plt.subplots(figsize=(1.55 * len(arms) + 2.4, 1.35 * len(arms) + 2.0))
-    im = ax.imshow(mean, cmap="viridis")
+    im = ax.imshow(mean, cmap=RDM_CMAP)
     ax.set_xticks(range(len(arms)))
     ax.set_yticks(range(len(arms)))
     ax.set_xticklabels(disp, rotation=30, ha="right", fontsize=9)
@@ -689,7 +705,7 @@ def paired_contrast_figure(
         for xi, d in zip(np.full(deltas.size, x) + jitter, deltas):
             ax.plot([xi, xi], [0, d], color="0.75", linewidth=0.9, zorder=1)
         ax.scatter(np.full(deltas.size, x) + jitter, deltas, s=42, zorder=3,
-                   color=["#B2182B" if d > 0 else "#2166AC" for d in deltas],
+                   color=[DELTA_POS if d > 0 else DELTA_NEG for d in deltas],
                    edgecolors="white", linewidths=0.5)
         ax.hlines(float(deltas.mean()), x - 0.3, x + 0.3, color="black",
                   linewidth=2.2, zorder=4)
@@ -735,18 +751,17 @@ def per_ts_curve_figure(
     priors = list(ts_by_prior)
     fig, axes = plt.subplots(1, len(priors), figsize=(5.0 * len(priors), 4.2),
                              sharey=True, squeeze=False)
-    palette = plt.cm.tab10.colors
     for ax, prior in zip(axes[0], priors):
         if ceiling is not None:
             ax.axhspan(ceiling[0], ceiling[1], color="0.82", alpha=0.7, zorder=0,
                        label="neural noise ceiling")
         xs = list(ts_by_prior[prior])
-        for i, arm in enumerate(curves):
+        for arm in curves:
             ys = curves[arm].get(prior)
             if ys is None:
                 continue
             ax.plot(xs, ys, marker="o", markersize=5, linewidth=1.8,
-                    color=palette[i % len(palette)],
+                    color=arm_color(arm),
                     label=labels.get(arm, arm) if labels else arm)
         ax.axvline(800, color="#6b7280", linestyle=":", linewidth=1.4)
         ax.set_xlabel("ts (ms)")
@@ -776,7 +791,6 @@ def overlap_separation_figure(
     arms = list(separations)
     fig, ax = plt.subplots(figsize=(1.75 * len(arms) + 2.4, 4.4))
     rng = np.random.default_rng(0)
-    palette = plt.cm.tab10.colors
     for x, arm in enumerate(arms):
         vals = np.asarray(separations[arm], dtype=float)
         vals = vals[np.isfinite(vals)]
@@ -784,11 +798,11 @@ def overlap_separation_figure(
             continue
         jitter = rng.uniform(-0.15, 0.15, size=vals.size)
         ax.scatter(np.full(vals.size, x) + jitter, vals, s=42,
-                   color=palette[x % len(palette)], edgecolors="white",
+                   color=arm_color(arm), edgecolors="white",
                    linewidths=0.5, zorder=3)
         ax.hlines(vals.mean(), x - 0.3, x + 0.3, color="black", linewidth=2.2, zorder=4)
     if neural_value is not None and np.isfinite(neural_value):
-        ax.axhline(neural_value, color="#B2182B", linestyle="--", linewidth=1.6,
+        ax.axhline(neural_value, color="black", linestyle="--", linewidth=1.6,
                    label=f"DMFC ({neural_value:.3f})")
         ax.legend(fontsize=9, frameon=False)
     ax.set_xticks(range(len(arms)))
