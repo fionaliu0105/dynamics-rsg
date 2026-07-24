@@ -90,7 +90,8 @@ just as brain-like overall. Similarity and prior coding come apart."
 
 **What it shows:** distance to DMFC per arm, one point per seed, 95% bootstrap CIs, the
 untrained control for a floor, and the neural noise-ceiling band. Arms are ordered along the
-locality axis.
+locality axis. The noise-ceiling band is available for RSA; an iDSA noise ceiling was not
+computed.
 
 **Numbers:** RSA means RFLO 0.241, BPTT 0.264, PC(20) 0.346, untrained 0.389, PC(100) 0.442.
 iDSA means BPTT 4.49, RFLO 4.76, then untrained 7.89 and both PC arms near 8.0.

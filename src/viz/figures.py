@@ -92,6 +92,7 @@ def summary_distance_figure(
     title_suffix: str = "distance to DMFC",
     name: str = "summary_distance_to_dmfc",
     labels: Optional[Mapping[str, str]] = None,
+    ylabel: str = "Distance",
 ) -> Path:
     """THE headline figure: distance-to-DMFC per rule, per metric, with seed spread.
 
@@ -110,6 +111,8 @@ def summary_distance_figure(
         labels: optional ``{rule: display name}`` for the x-axis tick labels, so a
             slide can read "PC (100 steps)" instead of the raw ``pc_steps100`` key.
             Rules without an entry keep their raw key.
+        ylabel: concise y-axis title. Keep uncertainty details in the caption so
+            the rotated label cannot collide with the panel title.
 
     Draws mean +/- spread over seeds per rule, grouped by metric. This reads saved
     metrics only. Reusable as-is; tracks feed it their per-seed distance arrays.
@@ -123,7 +126,13 @@ def summary_distance_figure(
         for r in m:
             if r not in rules:
                 rules.append(r)
-    fig, axes = plt.subplots(1, len(metrics), figsize=(5 * len(metrics), 4), squeeze=False)
+    fig, axes = plt.subplots(
+        1, len(metrics), figsize=(5 * len(metrics), 4), squeeze=False,
+        layout="constrained",
+    )
+    # Give rotated category labels and the y tick labels a little more breathing
+    # room than matplotlib's default constrained-layout padding.
+    fig.get_layout_engine().set(w_pad=0.15, h_pad=0.12)
     for ax, metric in zip(axes[0], metrics):
         if ceilings and metric in ceilings:
             lo, hi = ceilings[metric]
@@ -141,8 +150,8 @@ def summary_distance_figure(
         ax.set_xticks(range(len(rules)))
         ax.set_xticklabels([labels.get(r, r) if labels else r for r in rules],
                            rotation=20, ha="right")
-        ax.set_title(f"{metric}: {title_suffix}")
-        ax.set_ylabel("distance (points = seeds, bars = 95% bootstrap CI)")
+        ax.set_title(f"{metric}: {title_suffix}", pad=10)
+        ax.set_ylabel(ylabel, labelpad=8)
         if ceilings and metric in ceilings:
             ax.legend(fontsize=8)
     return savefig(fig, name, out_dir)

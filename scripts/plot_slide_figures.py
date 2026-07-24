@@ -92,13 +92,13 @@ def main() -> int:
     rsa_dist = {"RSA": {arm: _seed_dict_to_list(v) for arm, v in sig["rsa_to_dmfc"].items()}}
     written.append(summary_distance_figure(
         rsa_dist, out_dir=RSA_DIR, ceilings={"RSA": tuple(sig["noise_ceiling"])},
-        title_suffix="distance to DMFC, per seed", name="summary_dmfc_comparison",
-        labels=LABELS))
+        title_suffix="model-to-DMFC comparison", name="summary_dmfc_comparison",
+        labels=LABELS, ylabel="Distance to DMFC"))
     idsa_dist = {"iDSA": {arm: _seed_dict_to_list(v) for arm, v in sig["idsa_to_dmfc"].items()}}
     written.append(summary_distance_figure(
         idsa_dist, out_dir=IDSA_DIR,
-        title_suffix="distance to DMFC, per seed (no ceiling: iDSA noise ceiling not computed)",
-        name="summary_dmfc_comparison", labels=LABELS))
+        title_suffix="model-to-DMFC comparison",
+        name="summary_dmfc_comparison", labels=LABELS, ylabel="Distance to DMFC"))
 
     print("[plot_slide_figures] wrote:")
     for p in written:
